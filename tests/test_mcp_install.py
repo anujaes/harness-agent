@@ -28,9 +28,9 @@ def test_missing_lists_unset_references_only(ext_env, monkeypatch):
     assert secrets.missing(cfg) == ["TOKEN_A"]
 
 
-def test_secret_store_is_private(ext_env):
+def test_secret_store_is_private(ext_env, owner_only):
     secrets.set_secret("KEY_ONE", "abc")
-    assert oct(secrets.SECRETS_FILE.stat().st_mode)[-3:] == "600"
+    assert owner_only(secrets.SECRETS_FILE)
     assert secrets.delete_secret("KEY_ONE") and not secrets.delete_secret("KEY_ONE")
     with pytest.raises(ValueError):
         secrets.set_secret("not valid", "x")
@@ -187,7 +187,7 @@ def test_add_to_global_writes_jarvis_file_and_turns_scope_on(ext_env):
     assert srv["status"] == "added" and srv["scope"] == "global"
     assert "turned it on" in srv["scope_note"]
     assert state.global_mcp is True
-    data = json.loads((ext_env.home / ".config/harness-agent/mcp.json").read_text())
+    data = json.loads((ext_env.home / ".config/harness-agent/mcp.json").read_text(encoding="utf-8"))
     assert data["servers"]["tool"]["command"] == "npx"
     assert data["auto_connect"] == ["tool"]
     assert get_config().get_scope("tool") == "global"
@@ -196,20 +196,20 @@ def test_add_to_global_writes_jarvis_file_and_turns_scope_on(ext_env):
 def test_add_to_project_writes_shared_format(ext_env):
     res = install.add_mcp("https://mcp.linear.app/mcp", scope="project", connect=False)
     assert res["ok"]
-    data = json.loads((ext_env.proj / ".mcp.json").read_text())
+    data = json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))
     assert data == {"mcpServers": {"linear": {"type": "http", "url": "https://mcp.linear.app/mcp"}}}
     assert get_config().get_scope("linear") == "project"
 
 
 def test_existing_project_file_keeps_its_schema(ext_env):
-    (ext_env.proj / ".mcp.json").write_text(json.dumps({"mcpServers": {"old": {"command": "echo"}}}))
+    (ext_env.proj / ".mcp.json").write_text(json.dumps({"mcpServers": {"old": {"command": "echo"}}}), encoding="utf-8")
     install.add_mcp(STDIO, scope="project", connect=False)
-    data = json.loads((ext_env.proj / ".mcp.json").read_text())
+    data = json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))
     assert set(data) == {"mcpServers"} and set(data["mcpServers"]) == {"old", "tool"}
 
-    (ext_env.proj / ".mcp.json").write_text(json.dumps({"servers": {"old": {"type": "stdio", "command": "echo"}}, "auto_connect": []}))
+    (ext_env.proj / ".mcp.json").write_text(json.dumps({"servers": {"old": {"type": "stdio", "command": "echo"}}, "auto_connect": []}), encoding="utf-8")
     install.add_mcp("uvx mcp-server-time", scope="project", connect=False)
-    data = json.loads((ext_env.proj / ".mcp.json").read_text())
+    data = json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))
     assert "time" in data["servers"] and data["auto_connect"] == ["time"]
 
 
@@ -222,7 +222,7 @@ def test_secrets_stay_out_of_the_config_file(ext_env):
         command="npx", args=["-y", "@acme/x"], name="x", scope="project", connect=False,
         env={"ACME_TOKEN": "ghp_secretvalue", "REGION": "eu"},
     )
-    text = (ext_env.proj / ".mcp.json").read_text()
+    text = (ext_env.proj / ".mcp.json").read_text(encoding="utf-8")
     assert "ghp_secretvalue" not in text
     assert "${ACME_TOKEN}" in text and '"REGION": "eu"' in text
     assert secrets.get_secret("ACME_TOKEN") == "ghp_secretvalue"
@@ -231,7 +231,7 @@ def test_secrets_stay_out_of_the_config_file(ext_env):
 
 def test_header_credentials_are_stored_not_written(ext_env):
     install.add_mcp(url="https://api.example.com/mcp", name="api", headers={"Authorization": "Bearer tok-123"}, scope="global", connect=False)
-    text = (ext_env.home / ".config/harness-agent/mcp.json").read_text()
+    text = (ext_env.home / ".config/harness-agent/mcp.json").read_text(encoding="utf-8")
     assert "tok-123" not in text and "Bearer ${MCP_API_AUTHORIZATION}" in text
     assert secrets.get_secret("MCP_API_AUTHORIZATION") == "tok-123"
 
@@ -259,7 +259,7 @@ def test_adding_twice_reports_exists(ext_env):
 def test_replace_overwrites(ext_env):
     install.add_mcp(STDIO, scope="project", connect=False)
     install.add_mcp(command="node", args=["x.js"], name="tool", scope="project", connect=False, replace=True)
-    data = json.loads((ext_env.proj / ".mcp.json").read_text())
+    data = json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))
     assert data["mcpServers"]["tool"]["command"] == "node"
 
 
@@ -287,7 +287,7 @@ def test_remove_from_project_and_global(ext_env):
     assert install.remove_mcp("tool")["ok"]
     assert install.remove_mcp("time")["scope"] == "global"
     assert not install.remove_mcp("tool")["ok"]
-    assert json.loads((ext_env.proj / ".mcp.json").read_text())["mcpServers"] == {}
+    assert json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"] == {}
 
 
 def test_remove_needs_scope_when_ambiguous(ext_env):
@@ -302,7 +302,7 @@ def test_move_between_scopes(ext_env):
     res = install.move_mcp("tool", "global")
     assert res["ok"], res
     assert get_config().get_scope("tool") == "global"
-    assert json.loads((ext_env.proj / ".mcp.json").read_text())["mcpServers"] == {}
+    assert json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"] == {}
     assert not install.move_mcp("tool", "global")["ok"]
 
 

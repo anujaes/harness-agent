@@ -16,6 +16,8 @@ import re
 import threading
 from typing import Any
 
+from ..utils.io import restrict_to_owner
+
 SECRETS_FILE = pathlib.Path.home() / ".config" / "harness-agent" / "mcp_secrets.json"
 
 _REF_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
@@ -45,10 +47,7 @@ def _write(data: dict[str, str]) -> None:
     SECRETS_FILE.parent.mkdir(parents=True, exist_ok=True)
     tmp = SECRETS_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    try:
-        os.chmod(tmp, 0o600)
-    except OSError:
-        pass
+    restrict_to_owner(tmp)
     os.replace(tmp, SECRETS_FILE)
 
 

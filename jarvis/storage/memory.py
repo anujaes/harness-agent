@@ -7,7 +7,8 @@ Shape on disk:
 import json, os, threading, time
 from typing import List, Dict, Optional
 
-from ..constants import MEMORY_FILE, CONFIG_DIR, FILE_PERMISSION
+from ..constants import MEMORY_FILE, CONFIG_DIR
+from ..utils.io import restrict_to_owner
 
 # Thread-level lock so concurrent tool calls (from ThreadPoolExecutor in
 # render.py) don't race on read/write of the JSON file.
@@ -18,7 +19,7 @@ def _load() -> Dict:
     if not MEMORY_FILE.exists():
         return {"facts": [], "next_id": 1}
     try:
-        data = json.loads(MEMORY_FILE.read_text())
+        data = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
         data.setdefault("facts", [])
         data.setdefault("next_id", 1)
         return data
@@ -28,9 +29,8 @@ def _load() -> Dict:
 
 def _save(data: Dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    try: os.chmod(MEMORY_FILE, FILE_PERMISSION)
-    except OSError: pass
+    MEMORY_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    restrict_to_owner(MEMORY_FILE)
 
 
 def list_facts() -> List[Dict]:

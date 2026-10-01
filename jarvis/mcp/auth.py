@@ -37,6 +37,8 @@ from typing import Any, Callable
 from mcp.client.auth import OAuthClientProvider
 from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 
+from ..utils.io import restrict_to_owner
+
 logger = logging.getLogger("jarvis.mcp.auth")
 
 AUTH_DIR = pathlib.Path.home() / ".config" / "harness-agent" / "mcp-auth"
@@ -81,10 +83,7 @@ class FileTokenStorage:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
+        restrict_to_owner(tmp)
         os.replace(tmp, self.path)
 
     def has_tokens(self) -> bool:

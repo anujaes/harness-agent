@@ -16,7 +16,8 @@ Shape on disk:
 import json, os, threading, time, re
 from typing import List, Dict
 
-from ..constants import LESSONS_FILE, CONFIG_DIR, FILE_PERMISSION
+from ..constants import LESSONS_FILE, CONFIG_DIR
+from ..utils.io import restrict_to_owner
 
 # Thread-level lock to prevent concurrent read/write races on the JSON file
 # when tool calls execute in parallel via ThreadPoolExecutor.
@@ -30,7 +31,7 @@ def _load() -> Dict:
     if not LESSONS_FILE.exists():
         return {"lessons": [], "next_id": 1}
     try:
-        data = json.loads(LESSONS_FILE.read_text())
+        data = json.loads(LESSONS_FILE.read_text(encoding="utf-8"))
         data.setdefault("lessons", [])
         data.setdefault("next_id", 1)
         return data
@@ -40,9 +41,8 @@ def _load() -> Dict:
 
 def _save(data: Dict) -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    LESSONS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False))
-    try: os.chmod(LESSONS_FILE, FILE_PERMISSION)
-    except OSError: pass
+    LESSONS_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    restrict_to_owner(LESSONS_FILE)
 
 
 def _prune(data: Dict) -> None:

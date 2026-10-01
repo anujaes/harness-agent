@@ -31,6 +31,8 @@ import json
 import pathlib
 from typing import Any
 
+from ..utils.io import restrict_to_owner
+
 
 MCP_GLOBAL_CONFIG_FILE = pathlib.Path.home() / ".config" / "harness-agent" / "mcp.json"
 MCP_PROJECT_CONFIG_FILENAME = ".mcp.json"
@@ -733,10 +735,7 @@ def _write_raw(path: pathlib.Path, data: dict[str, Any], *, private: bool) -> No
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     if private:
-        try:
-            os.chmod(tmp, 0o600)
-        except OSError:
-            pass
+        restrict_to_owner(tmp)
     os.replace(tmp, path)
 
 

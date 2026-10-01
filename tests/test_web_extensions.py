@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import queue
-import stat
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -54,7 +53,7 @@ def drain(sub):
 
 def write_skill(folder: Path, name: str, desc: str = "Does a thing when asked.") -> None:
     folder.mkdir(parents=True)
-    (folder / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\nSteps.\n")
+    (folder / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\n\nSteps.\n", encoding="utf-8")
 
 
 # ─── MCP: list + parse ─────────────────────────────────────────────────────
@@ -65,7 +64,7 @@ def test_mcp_list_shape_and_auth(remote):
     data = call("/api/mcp")
     assert data["servers"] == [] and data["global_mcp"] is False
     assert data["project_config_path"] == str(env.proj / ".mcp.json")
-    assert data["global_config_path"].endswith("harness-agent/mcp.json")
+    assert Path(data["global_config_path"]).as_posix().endswith("harness-agent/mcp.json")
     assert data["pending_auth"] == []
     ids = {c["id"] for c in data["catalog"]}
     assert {"linear", "notion", "github"} <= ids
@@ -105,7 +104,7 @@ def test_parse_understands_what_people_paste(remote):
 # ─── MCP: add / remove / move ──────────────────────────────────────────────
 
 
-def test_add_to_project_keeps_secrets_out_of_the_file(remote):
+def test_add_to_project_keeps_secrets_out_of_the_file(remote, owner_only):
     env, bridge, call = remote
     sub = bridge.subscribe()
     snippet = {"mcpServers": {"tool": {"command": "echo", "args": ["hi"], "env": {"API_TOKEN": "s3cret-value", "MODE": "fast"}}}}
@@ -114,13 +113,13 @@ def test_add_to_project_keeps_secrets_out_of_the_file(remote):
     assert res["ok"]
     (sv,) = res["servers"]
     assert (sv["name"], sv["scope"], sv["status"]) == ("tool", "project", "added")
-    written = (env.proj / ".mcp.json").read_text()
+    written = (env.proj / ".mcp.json").read_text(encoding="utf-8")
     assert "s3cret-value" not in written
     entry = json.loads(written)["mcpServers"]["tool"]
     assert entry["env"] == {"API_TOKEN": "${API_TOKEN}", "MODE": "fast"}
     secrets_file = env.home / ".config" / "harness-agent" / "mcp_secrets.json"
-    assert json.loads(secrets_file.read_text()) == {"API_TOKEN": "s3cret-value"}
-    assert stat.S_IMODE(secrets_file.stat().st_mode) == 0o600
+    assert json.loads(secrets_file.read_text(encoding="utf-8")) == {"API_TOKEN": "s3cret-value"}
+    assert owner_only(secrets_file)
 
     # the reply carries the fresh list, and other pages get an event
     assert [s["name"] for s in res["mcp"]["servers"]] == ["tool"]
@@ -129,7 +128,7 @@ def test_add_to_project_keeps_secrets_out_of_the_file(remote):
 
     again = call("/api/mcp/add", {"source": json.dumps(snippet), "scope": "project", "connect": False})
     assert again["servers"][0]["exists"] is True
-    assert len(json.loads((env.proj / ".mcp.json").read_text())["mcpServers"]) == 1
+    assert len(json.loads((env.proj / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]) == 1
 
 
 def test_add_global_turns_the_scope_on_and_flags_missing_keys(remote):
@@ -142,7 +141,7 @@ def test_add_global_turns_the_scope_on_and_flags_missing_keys(remote):
     assert sv["status"] == "needs_credentials" and sv["missing"] == ["BRAVE_API_KEY"]
     assert "turned it on" in sv["scope_note"]
     assert res["global_mcp"] is True and state.global_mcp is True
-    cfg = json.loads((env.home / ".config" / "harness-agent" / "mcp.json").read_text())
+    cfg = json.loads((env.home / ".config" / "harness-agent" / "mcp.json").read_text(encoding="utf-8"))
     assert cfg["servers"]["brave"]["env"] == {"BRAVE_API_KEY": "${BRAVE_API_KEY}"}
     assert cfg["auto_connect"] == ["brave"]
     listed = call("/api/mcp")["servers"]
@@ -157,7 +156,7 @@ def test_credentials_are_stored_and_the_server_reports_its_state(remote):
     assert call("/api/mcp/credentials", {"name": "ghost", "values": {}})["ok"] is False
     res = call("/api/mcp/credentials", {"name": "ghost", "values": {"GHOST_KEY": "abc123"}})
     # the key is saved; connecting a missing program fails with its own message
-    assert json.loads((env.home / ".config" / "harness-agent" / "mcp_secrets.json").read_text()) == {"GHOST_KEY": "abc123"}
+    assert json.loads((env.home / ".config" / "harness-agent" / "mcp_secrets.json").read_text(encoding="utf-8")) == {"GHOST_KEY": "abc123"}
     assert res["ok"] is False and res["status"] == "failed" and res["error"]
     listed = call("/api/mcp")["servers"][0]
     assert listed["needs_credentials"] == [] and listed["health"]["status"] == "failed"
@@ -169,15 +168,15 @@ def test_move_and_remove(remote):
     proj_file, glob_file = env.proj / ".mcp.json", env.home / ".config" / "harness-agent" / "mcp.json"
 
     moved = call("/api/mcp/move", {"name": "memory", "scope": "global"})
-    assert moved["ok"] and "memory" in json.loads(glob_file.read_text())["servers"]
-    assert "memory" not in json.loads(proj_file.read_text()).get("mcpServers", {})
+    assert moved["ok"] and "memory" in json.loads(glob_file.read_text(encoding="utf-8"))["servers"]
+    assert "memory" not in json.loads(proj_file.read_text(encoding="utf-8")).get("mcpServers", {})
     assert call("/api/mcp/move", {"name": "memory", "scope": "global"})["ok"] is False
     assert call("/api/mcp/move", {"name": "memory", "scope": "nowhere"})["ok"] is False
 
     assert call("/api/mcp/remove", {"name": "nope"})["ok"] is False
     removed = call("/api/mcp/remove", {"name": "memory", "scope": "global"})
     assert removed["ok"] and removed["mcp"]["servers"] == []
-    assert json.loads(glob_file.read_text())["servers"] == {}
+    assert json.loads(glob_file.read_text(encoding="utf-8"))["servers"] == {}
 
 
 def test_sign_in_routes_for_a_server_that_isnt_waiting(remote):
@@ -233,7 +232,7 @@ def test_install_project_then_global_move_and_remove(remote, skill_source):
     assert res["ok"] and [i["name"] for i in res["installed"]] == ["alpha", "odd-name"]
     md = (env.proj / ".harness" / "skills" / "alpha" / "SKILL.md")
     assert md.is_file()
-    assert "name: odd-name" in (env.proj / ".harness" / "skills" / "odd-name" / "SKILL.md").read_text()
+    assert "name: odd-name" in (env.proj / ".harness" / "skills" / "odd-name" / "SKILL.md").read_text(encoding="utf-8")
     assert [e for e in drain(sub) if e["type"] == "skills"]
 
     listed = call("/api/skills")
@@ -241,7 +240,7 @@ def test_install_project_then_global_move_and_remove(remote, skill_source):
     assert set(by_name) == {"alpha", "odd-name"}
     assert by_name["alpha"]["scope"] == "project" and by_name["alpha"]["managed"] is True
     assert by_name["alpha"]["origin"] == str(skill_source) and by_name["alpha"]["active"] is True
-    assert res["skills"]["skills"] and listed["project_dir"].endswith(".harness/skills")
+    assert res["skills"]["skills"] and Path(listed["project_dir"]).as_posix().endswith(".harness/skills")
 
     again = call("/api/skills/install", {"source": str(skill_source), "scope": "project", "names": ["alpha"]})
     assert again["ok"] is False and "already installed" in again["error"]
@@ -280,13 +279,13 @@ def test_skills_outside_jarvis_folders_are_not_removable(remote):
 
 
 def test_dialogs_banner_and_events_are_wired_in_the_page():
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     for ident in ("mcp", "mcp-body", "skills", "skills-body", "mcp-chip", "mcp-dot"):
         assert f'id="{ident}"' in html, ident
     assert "/static/css/extensions.css" in html
-    events = (STATIC / "js" / "events.js").read_text()
+    events = (STATIC / "js" / "events.js").read_text(encoding="utf-8")
     assert "case 'mcp':" in events and "case 'skills':" in events
-    app = (STATIC / "js" / "app.js").read_text()
+    app = (STATIC / "js" / "app.js").read_text(encoding="utf-8")
     assert "initMcp()" in app and "initSkills()" in app
-    pickers = (STATIC / "js" / "pickers.js").read_text()
+    pickers = (STATIC / "js" / "pickers.js").read_text(encoding="utf-8")
     assert "openMcp(arg)" in pickers and "openSkills()" in pickers

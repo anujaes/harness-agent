@@ -124,7 +124,7 @@ def test_connect_events_reach_listeners(demo):
 # ── sign-in ────────────────────────────────────────────────────────────────
 
 
-def test_oauth_flow_end_to_end(demo, ext_env):
+def test_oauth_flow_end_to_end(demo, ext_env, owner_only):
     base = demo("oauth")
     cfg = {"type": "http", "url": f"{base}/mcp"}
 
@@ -151,7 +151,7 @@ def test_oauth_flow_end_to_end(demo, ext_env):
     assert "7" in mcp_registry._call_mcp_tool("hosted", "add", {"a": 3, "b": 4})
     assert not coordinator.is_pending("hosted")
     saved = list((ext_env.home / ".config/harness-agent/mcp-auth").glob("*.json"))
-    assert saved and all(oct(p.stat().st_mode)[-3:] == "600" for p in saved)
+    assert saved and all(owner_only(p) for p in saved)
 
     # Restart: the saved login connects silently, no sign-in.
     mcp_registry.disconnect("hosted")
@@ -161,9 +161,9 @@ def test_oauth_flow_end_to_end(demo, ext_env):
 
     # Expired access token: refreshed with the refresh token, still silent.
     f = saved[0]
-    data = json.loads(f.read_text())
+    data = json.loads(f.read_text(encoding="utf-8"))
     data["expires_at"] = time.time() - 60
-    f.write_text(json.dumps(data))
+    f.write_text(json.dumps(data), encoding="utf-8")
     with mcp_registry.startup_connect():
         assert mcp_registry.connect("hosted", cfg) is None
     mcp_registry.disconnect("hosted")
@@ -280,7 +280,7 @@ def test_coordinator_expires_old_links(monkeypatch):
     c = mcp_auth.AuthCoordinator()
     req = c.begin("s", "https://auth.example/authorize?state=abc")
     monkeypatch.setattr(mcp_auth, "FLOW_TTL", 0.0)
-    time.sleep(0.01)
+    time.sleep(0.05)  # > one tick of Windows' ~15.6 ms monotonic clock
     assert c.get("s") is None or c.get("s").status == "cancelled"
     assert not c.is_pending("s")
     assert req.status == "cancelled"
