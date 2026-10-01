@@ -58,7 +58,7 @@ ID_PREFIX = "kp:"
 def _read_key_suffix(path: pathlib.Path) -> str:
     """Return the last 6 characters of the key in ``path``, or empty string."""
     try:
-        raw = path.read_text().strip()
+        raw = path.read_text(encoding="utf-8").strip()
         if len(raw) > 6:
             return raw[-6:]
         return raw
@@ -355,7 +355,7 @@ class KeyModalScreen(TuiModalScreen[None]):
         current = ""
         if info["source"] == "file":
             try:
-                current = info["file_path"].read_text().strip()
+                current = info["file_path"].read_text(encoding="utf-8").strip()
             except Exception:
                 pass
 

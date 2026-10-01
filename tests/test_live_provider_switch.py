@@ -126,7 +126,7 @@ def test_wire_messages_never_leave_an_assistant_turn_empty():
 def test_openrouter_key_added_mid_session_is_used(sandbox):
     from jarvis.commands.control import _apply_model_selection
 
-    sandbox["OPENROUTER_KEY_FILE"].write_text("sk-or-new-key")
+    sandbox["OPENROUTER_KEY_FILE"].write_text("sk-or-new-key", encoding="utf-8")
     _apply_model_selection("vendor/model:free", source=PROVIDER_OPENROUTER)
 
     assert state.provider == PROVIDER_OPENROUTER
@@ -156,7 +156,7 @@ def test_anthropic_oauth_pick_after_sign_in_does_not_ask_for_api_key(sandbox, mo
 def test_switching_to_anthropic_never_keeps_another_providers_model(sandbox, monkeypatch):
     from jarvis.commands.control import _handle_provider
 
-    sandbox["KEY_FILE"].write_text("sk-ant-test")
+    sandbox["KEY_FILE"].write_text("sk-ant-test", encoding="utf-8")
     monkeypatch.setattr(state, "provider", PROVIDER_OPENROUTER)
     monkeypatch.setattr(state, "MODEL", "vendor/model:free")
     _handle_provider(PROVIDER_ANTHROPIC)
@@ -198,7 +198,7 @@ def test_replacing_the_active_key_rebuilds_the_client(sandbox, monkeypatch):
 
     monkeypatch.setattr(state, "provider", PROVIDER_OPENROUTER)
     monkeypatch.setattr(state, "harness_agent_free", False)
-    sandbox["OPENROUTER_KEY_FILE"].write_text("sk-or-replacement")
+    sandbox["OPENROUTER_KEY_FILE"].write_text("sk-or-replacement", encoding="utf-8")
     note = apply_key_change(PROVIDER_OPENROUTER)
     assert "now in use" in note
     assert state.client.auth_token == "sk-or-replacement"

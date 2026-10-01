@@ -55,6 +55,6 @@ def test_qr_endpoint_needs_token_and_a_http_link(remote):
 
 
 def test_page_has_qr_button_and_dialog():
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'id="qr-btn"' in html and 'id="qr"' in html
-    assert "initQr" in (STATIC / "js" / "app.js").read_text()
+    assert "initQr" in (STATIC / "js" / "app.js").read_text(encoding="utf-8")

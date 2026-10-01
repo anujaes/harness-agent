@@ -106,18 +106,18 @@ class EditFileIntegrationTests(unittest.TestCase):
             root = Path(tmp)
             set_cwd(root)
             f = root / "sample.py"
-            f.write_text("def foo():   \n    return 1\n")
+            f.write_text("def foo():   \n    return 1\n", encoding="utf-8")
             out = edit_file(str(f), "def foo():\n    return 1", "def foo():\n    return 2")
             self.assertIn("EDITED", out)
             self.assertIn("whitespace-tolerant", out)
-            self.assertEqual(f.read_text(), "def foo():\n    return 2\n")
+            self.assertEqual(f.read_text(encoding="utf-8"), "def foo():\n    return 2\n")
 
     def test_multi_edit_mixes_exact_and_fuzzy(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             set_cwd(root)
             f = root / "sample.txt"
-            f.write_text("alpha   \nbeta\ngamma\n")
+            f.write_text("alpha   \nbeta\ngamma\n", encoding="utf-8")
             out = multi_edit(
                 edits=[
                     # fuzzy: trailing whitespace after "alpha" in the file
@@ -128,7 +128,7 @@ class EditFileIntegrationTests(unittest.TestCase):
             )
             self.assertIn("2 succeeded, 0 failed", out)
             self.assertIn("whitespace-tolerant", out)
-            self.assertEqual(f.read_text(), "ALPHA\nbeta\nGAMMA\n")
+            self.assertEqual(f.read_text(encoding="utf-8"), "ALPHA\nbeta\nGAMMA\n")
 
 
 if __name__ == "__main__":

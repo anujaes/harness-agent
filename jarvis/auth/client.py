@@ -90,7 +90,7 @@ def _has_openrouter_key() -> bool:
     if os.getenv("OPENROUTER_API_KEY"):
         return True
     try:
-        return OPENROUTER_KEY_FILE.exists() and bool(OPENROUTER_KEY_FILE.read_text().strip())
+        return OPENROUTER_KEY_FILE.exists() and bool(OPENROUTER_KEY_FILE.read_text(encoding="utf-8").strip())
     except OSError:
         return False
 
@@ -100,7 +100,7 @@ def _has_opencode_key() -> bool:
     if os.getenv("OPENCODE_API_KEY"):
         return True
     try:
-        return OPENCODE_KEY_FILE.exists() and bool(OPENCODE_KEY_FILE.read_text().strip())
+        return OPENCODE_KEY_FILE.exists() and bool(OPENCODE_KEY_FILE.read_text(encoding="utf-8").strip())
     except OSError:
         return False
 
@@ -119,7 +119,7 @@ def _has_usable_anthropic_auth() -> bool:
     if not AUTH_MODE_FILE.exists():
         return False
     try:
-        stored = AUTH_MODE_FILE.read_text().strip()
+        stored = AUTH_MODE_FILE.read_text(encoding="utf-8").strip()
     except OSError:
         return False
     if stored == AUTH_OAUTH and load_oauth_tokens():
@@ -153,7 +153,7 @@ def _has_any_provider_credentials() -> bool:
 
 def _has_anthropic_api_key() -> bool:
     return bool(os.getenv("ANTHROPIC_API_KEY")) or (
-        KEY_FILE.exists() and bool(KEY_FILE.read_text().strip())
+        KEY_FILE.exists() and bool(KEY_FILE.read_text(encoding="utf-8").strip())
     )
 
 
@@ -164,7 +164,7 @@ def _resolve_auth_mode(*, interactive: bool) -> str | None:
     if load_oauth_tokens():
         return AUTH_OAUTH
     if AUTH_MODE_FILE.exists():
-        stored = AUTH_MODE_FILE.read_text().strip()
+        stored = AUTH_MODE_FILE.read_text(encoding="utf-8").strip()
         if stored == AUTH_OAUTH and load_oauth_tokens():
             return AUTH_OAUTH
         if stored == AUTH_API_KEY and _has_anthropic_api_key():
@@ -220,7 +220,7 @@ def _resolve_provider(*, interactive: bool = True) -> str:
         return PROVIDER_KIMCHI
     if PROVIDER_FILE.exists():
         try:
-            stored = PROVIDER_FILE.read_text().strip()
+            stored = PROVIDER_FILE.read_text(encoding="utf-8").strip()
         except OSError:
             stored = ""
         if stored == PROVIDER_OPENAI_CODEX and load_codex_oauth_tokens():
@@ -289,11 +289,11 @@ def _pick_fallback_provider(*, interactive: bool = True) -> str | None:
         return PROVIDER_OPENROUTER
     from ..constants.paths import OPENCODE_KEY_FILE, KIMCHI_KEY_FILE
     try:
-        if OPENCODE_KEY_FILE.exists() and OPENCODE_KEY_FILE.read_text().strip():
+        if OPENCODE_KEY_FILE.exists() and OPENCODE_KEY_FILE.read_text(encoding="utf-8").strip():
             return PROVIDER_OPENCODE
-        if OPENCODE_ZEN_KEY_FILE.exists() and OPENCODE_ZEN_KEY_FILE.read_text().strip():
+        if OPENCODE_ZEN_KEY_FILE.exists() and OPENCODE_ZEN_KEY_FILE.read_text(encoding="utf-8").strip():
             return PROVIDER_OPENCODE_ZEN
-        if KIMCHI_KEY_FILE.exists() and KIMCHI_KEY_FILE.read_text().strip():
+        if KIMCHI_KEY_FILE.exists() and KIMCHI_KEY_FILE.read_text(encoding="utf-8").strip():
             return PROVIDER_KIMCHI
     except OSError:
         pass

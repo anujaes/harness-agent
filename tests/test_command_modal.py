@@ -127,7 +127,7 @@ def test_editor_creates_command_from_form(hermetic_app, temp_commands):
 
             created = temp_commands / ".harness/commands/daily-report.md"
             assert created.exists()
-            content = created.read_text()
+            content = created.read_text(encoding="utf-8")
             assert "name: daily-report" in content
             assert "description: Summarize today's work" in content
             assert "Summarize: $ARGUMENTS" in content
@@ -162,7 +162,7 @@ def test_editor_edits_existing_command_prefilled(hermetic_app, temp_commands):
             await pilot.press("ctrl+s")
             await pilot.pause(0.3)
 
-            content = cmd_file.read_text()
+            content = cmd_file.read_text(encoding="utf-8")
             assert "description: Updated description" in content
             assert "New template body. $ARGUMENTS" in content
             await pilot.press("escape")

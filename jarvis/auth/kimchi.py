@@ -28,7 +28,7 @@ def has_kimchi_key() -> bool:
     if os.getenv("KIMCHI_API_KEY"):
         return True
     try:
-        return KIMCHI_KEY_FILE.exists() and bool(KIMCHI_KEY_FILE.read_text().strip())
+        return KIMCHI_KEY_FILE.exists() and bool(KIMCHI_KEY_FILE.read_text(encoding="utf-8").strip())
     except OSError:
         return False
 
@@ -37,7 +37,7 @@ def load_kimchi_key() -> str:
     if os.getenv("KIMCHI_API_KEY"):
         return os.environ["KIMCHI_API_KEY"]
     if KIMCHI_KEY_FILE.exists():
-        k = KIMCHI_KEY_FILE.read_text().strip()
+        k = KIMCHI_KEY_FILE.read_text(encoding="utf-8").strip()
         if k:
             return k
     return prompt_for_kimchi_key()

@@ -37,7 +37,7 @@ def claude_code_version() -> str:
     from ..constants.oauth import CLAUDE_CODE_VERSION
 
     try:
-        saved = _version_file().read_text().strip()
+        saved = _version_file().read_text(encoding="utf-8").strip()
     except OSError:
         saved = ""
     if _VERSION_RE.fullmatch(saved) and _version_key(saved) > _version_key(CLAUDE_CODE_VERSION):
@@ -156,7 +156,7 @@ def oauth_client_headers() -> dict[str, str]:
 def load_oauth_tokens() -> Optional[dict]:
     if not OAUTH_FILE.exists(): return None
     try:
-        data = json.loads(OAUTH_FILE.read_text())
+        data = json.loads(OAUTH_FILE.read_text(encoding="utf-8"))
         if not data.get("access_token") or not data.get("refresh_token"):
             return None
         return data

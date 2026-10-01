@@ -28,7 +28,7 @@ def load_openrouter_key() -> str:
     if os.getenv("OPENROUTER_API_KEY"):
         return os.environ["OPENROUTER_API_KEY"]
     if OPENROUTER_KEY_FILE.exists():
-        k = OPENROUTER_KEY_FILE.read_text().strip()
+        k = OPENROUTER_KEY_FILE.read_text(encoding="utf-8").strip()
         if k.startswith("sk-or-"):
             return k
     return prompt_for_openrouter_key()

@@ -28,7 +28,7 @@ def load_opencode_key() -> str:
     if os.getenv("OPENCODE_API_KEY"):
         return os.environ["OPENCODE_API_KEY"]
     if OPENCODE_KEY_FILE.exists():
-        k = OPENCODE_KEY_FILE.read_text().strip()
+        k = OPENCODE_KEY_FILE.read_text(encoding="utf-8").strip()
         if k:
             return k
     return prompt_for_opencode_key()

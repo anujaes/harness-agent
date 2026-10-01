@@ -47,7 +47,7 @@ def read(name: str) -> tuple[Any | None, bool]:
     callers can show something while a refresh runs.
     """
     try:
-        raw = json.loads(_path(name).read_text())
+        raw = json.loads(_path(name).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None, False
     if not isinstance(raw, dict) or "payload" not in raw:
@@ -64,7 +64,7 @@ def write(name: str, payload: Any) -> None:
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = _path(name).with_suffix(".tmp")
-        tmp.write_text(json.dumps({"fetched_at": time.time(), "payload": payload}))
+        tmp.write_text(json.dumps({"fetched_at": time.time(), "payload": payload}), encoding="utf-8")
         tmp.replace(_path(name))
     except (OSError, TypeError, ValueError):
         pass

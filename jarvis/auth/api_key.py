@@ -28,7 +28,7 @@ def load_key() -> str:
     if os.getenv("ANTHROPIC_API_KEY"):
         return os.environ["ANTHROPIC_API_KEY"]
     if KEY_FILE.exists():
-        k = KEY_FILE.read_text().strip()
+        k = KEY_FILE.read_text(encoding="utf-8").strip()
         if k.startswith("sk-ant-"):
             return k
     return prompt_for_key()

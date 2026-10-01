@@ -49,7 +49,7 @@ def test_renders_the_server_hunks_unified_and_split(tmp_path, monkeypatch):
     monkeypatch.setattr(fc, "CWD", root)
     fc.reset()
     f = root / "app.py"
-    f.write_text("a\nb = 1\nc\n")
+    f.write_text("a\nb = 1\nc\n", encoding="utf-8")
     fc.record(f, "a\nb = 0\nc\n", "a\nb = 1\nc\n", "edit")
     hunks = fc.detail(fc.file_id(f))["hunks"]
 

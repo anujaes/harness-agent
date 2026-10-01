@@ -103,7 +103,7 @@ def key_status(spec: dict[str, Any]) -> tuple[str, str]:
     if env_val:
         return "env", _tail(env_val)
     try:
-        raw = spec["file_path"].read_text().strip() if spec["file_path"].exists() else ""
+        raw = spec["file_path"].read_text(encoding="utf-8").strip() if spec["file_path"].exists() else ""
     except OSError:
         raw = ""
     return ("file", _tail(raw)) if raw else ("none", "")

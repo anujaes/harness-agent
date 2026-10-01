@@ -35,13 +35,13 @@ class PinContextTests(unittest.TestCase):
         pin_store.append_pin("never run git commit")
         self.assertEqual(pin_store.pin_text(), "always be concise\nnever run git commit")
         self.assertTrue(prefs.PIN_FILE.exists())
-        self.assertIn("never run git commit", prefs.PIN_FILE.read_text())
+        self.assertIn("never run git commit", prefs.PIN_FILE.read_text(encoding="utf-8"))
 
     def test_clear_pin_wipes_state_and_file(self):
         pin_store.append_pin("temporary rule")
         pin_store.clear_pin()
         self.assertEqual(pin_store.pin_text(), "")
-        self.assertEqual(prefs.PIN_FILE.read_text(), "")
+        self.assertEqual(prefs.PIN_FILE.read_text(encoding="utf-8"), "")
 
     def test_handle_pin_without_args_is_handled(self):
         pin_store.append_pin("line one")

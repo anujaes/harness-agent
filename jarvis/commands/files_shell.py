@@ -37,7 +37,7 @@ def handle_files_shell(c: str, arg: str) -> bool:
     if c == "/undo":
         if not state.backups: console.print("nothing to undo"); return True
         path, prev = state.backups.pop()
-        pathlib.Path(path).write_text(prev)
+        pathlib.Path(path).write_text(prev, encoding="utf-8")
         console.print(f"[green]restored {path}[/]")
         return True
     if c == "/export":
@@ -47,11 +47,11 @@ def handle_files_shell(c: str, arg: str) -> bool:
     if c == "/save":
         if not arg: console.print("usage: /save <file>"); return True
         pathlib.Path(arg).write_text(json.dumps(
-            [_msg_to_json(m) for m in state.messages], indent=2))
+            [_msg_to_json(m) for m in state.messages], indent=2), encoding="utf-8")
         console.print(f"[green]saved → {arg}[/]")
         return True
     if c == "/load":
-        state.messages = json.loads(pathlib.Path(arg).read_text())
+        state.messages = json.loads(pathlib.Path(arg).read_text(encoding="utf-8"))
         state.current_session_id = db_create_session(state.MODEL)
         db_replace_session_messages(state.current_session_id, state.messages)
         console.print(f"[green]loaded {len(state.messages)} messages → session #{state.current_session_id}[/]")
@@ -59,7 +59,7 @@ def handle_files_shell(c: str, arg: str) -> bool:
     if c == "/note":
         if not arg: console.print("usage: /note <text>"); return True
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-        with NOTES_FILE.open("a") as f:
+        with NOTES_FILE.open("a", encoding="utf-8") as f:
             f.write(f"- [{time.strftime('%Y-%m-%d %H:%M')}] {arg}\n")
         console.print(f"[green]✎ saved to {NOTES_FILE}[/]")
         return True

@@ -52,7 +52,7 @@ def test_change_events_carry_the_list_and_the_fresh_diff(remote):
     root, bridge, _get = remote
     sub = bridge.subscribe()
     f = root / "app.py"
-    f.write_text("a\nb\n")
+    f.write_text("a\nb\n", encoding="utf-8")
     fc.record(f, "a\n", "a\nb\n", "edit")
 
     (evt,) = [e for e in drain(sub) if e["type"] == "change"]
@@ -69,7 +69,7 @@ def test_no_diff_is_built_when_nobody_is_watching(remote):
     fc.change_event = lambda fid: seen.append(fid) or orig(fid)
     try:
         f = root / "a.txt"
-        f.write_text("1\n")
+        f.write_text("1\n", encoding="utf-8")
         fc.record(f, "0\n", "1\n", "edit")
     finally:
         fc.change_event = orig
@@ -79,7 +79,7 @@ def test_no_diff_is_built_when_nobody_is_watching(remote):
 def test_endpoints_serve_list_diff_and_patch(remote):
     root, _bridge, get = remote
     f = root / "x.py"
-    f.write_text("one\ntwo\n")
+    f.write_text("one\ntwo\n", encoding="utf-8")
     fc.record(f, "one\n", "one\ntwo\n", "edit")
 
     listing = get("/api/changes")
@@ -106,7 +106,7 @@ def test_unknown_file_id_is_a_404_and_the_token_is_required(remote):
 def test_only_tracked_files_can_be_read(remote):
     """The endpoint takes an id from the ledger, never a path."""
     root, _bridge, get = remote
-    (root / "secret.txt").write_text("hunter2\n")
+    (root / "secret.txt").write_text("hunter2\n", encoding="utf-8")
     with pytest.raises(urllib.error.HTTPError) as err:
         get("/api/changes/file?id=secret.txt")
     assert err.value.code == 404
@@ -115,7 +115,7 @@ def test_only_tracked_files_can_be_read(remote):
 def test_snapshot_includes_changes_and_jobs(remote):
     root, _bridge, _get = remote
     f = root / "a.txt"
-    f.write_text("1\n")
+    f.write_text("1\n", encoding="utf-8")
     fc.record(f, None, "1\n", "create")
     snap = state_api.snapshot_from_state()
     assert snap["changes"]["totals"]["files"] == 1

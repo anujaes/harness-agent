@@ -147,10 +147,10 @@ global_mcp: bool = False            # if True, include MCP servers from global c
                                     # only project .mcp.json is loaded.
 
 # user context
-pinned_context: str = PIN_FILE.read_text() if PIN_FILE.exists() else ""
+pinned_context: str = PIN_FILE.read_text(encoding="utf-8") if PIN_FILE.exists() else ""
 pin_enabled: bool = True          # inject pinned_context into system prompt when True
 aliases: Dict[str, str] = (
-    json.loads(ALIAS_FILE.read_text()) if ALIAS_FILE.exists() else {}
+    json.loads(ALIAS_FILE.read_text(encoding="utf-8")) if ALIAS_FILE.exists() else {}
 )
 
 # persistent session

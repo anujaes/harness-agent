@@ -111,7 +111,7 @@ def test_scaffold_creates_triggerable_command(tmp_path):
     assert ok
     p = pathlib.Path(path)
     assert p == tmp_path / ".harness/commands/daily-standup.md"
-    assert "description: Standup notes" in p.read_text()
+    assert "description: Standup notes" in p.read_text(encoding="utf-8")
     assert cc.find_command("daily-standup") is not None
 
 
@@ -148,7 +148,7 @@ def test_write_command_creates_and_updates_in_place(tmp_path):
     ok, path2 = cc.write_command("report", "Better description", "New body",
                                  existing_path=path)
     assert ok and path2 == path
-    content = p.read_text()
+    content = p.read_text(encoding="utf-8")
     assert "description: Better description" in content and "New body" in content
 
 
@@ -156,26 +156,26 @@ def test_write_command_edits_global_file_where_it_lives(tmp_path):
     gdir = cc.HARNESS_COMMANDS_DIR
     gdir.mkdir(parents=True)
     gfile = gdir / "deploy.md"
-    gfile.write_text("---\nname: deploy\ndescription: old\n---\n\nold body\n")
+    gfile.write_text("---\nname: deploy\ndescription: old\n---\n\nold body\n", encoding="utf-8")
 
     ok, path = cc.write_command("deploy", "new desc", "new body",
                                 existing_path=str(gfile))
     assert ok and pathlib.Path(path) == gfile  # saved back to the global dir
-    assert "new body" in gfile.read_text()
+    assert "new body" in gfile.read_text(encoding="utf-8")
 
 
 def test_write_command_rename_moves_file_and_preserves_hint(tmp_path):
     d = tmp_path / ".harness/commands"
     d.mkdir(parents=True)
     old = d / "old-name.md"
-    old.write_text('---\nname: old-name\ndescription: d\nargument-hint: "[file]"\n---\n\nbody\n')
+    old.write_text('---\nname: old-name\ndescription: d\nargument-hint: "[file]"\n---\n\nbody\n', encoding="utf-8")
 
     ok, path = cc.write_command("new-name", "d", "body", existing_path=str(old))
     assert ok
     assert not old.exists()
     new = pathlib.Path(path)
     assert new.name == "new-name.md"
-    assert 'argument-hint: "[file]"' in new.read_text()
+    assert 'argument-hint: "[file]"' in new.read_text(encoding="utf-8")
 
 
 def test_write_command_rejects_bad_input(tmp_path):
@@ -185,8 +185,8 @@ def test_write_command_rejects_bad_input(tmp_path):
     # rename onto an existing sibling is refused
     d = tmp_path / ".harness/commands"
     d.mkdir(parents=True)
-    (d / "a.md").write_text("body a")
-    (d / "b.md").write_text("body b")
+    (d / "a.md").write_text("body a", encoding="utf-8")
+    (d / "b.md").write_text("body b", encoding="utf-8")
     ok, msg = cc.write_command("b", "d", "x", existing_path=str(d / "a.md"))
     assert not ok and "already exists" in msg
 

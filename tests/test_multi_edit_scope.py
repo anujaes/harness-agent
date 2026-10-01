@@ -23,7 +23,7 @@ class MultiEditScopeTests(unittest.TestCase):
         self._outside = TemporaryDirectory()
         set_cwd(Path(self._project.name))
         self.outside_file = Path(self._outside.name) / "index.html"
-        self.outside_file.write_text("<h1>OLD</h1>\n")
+        self.outside_file.write_text("<h1>OLD</h1>\n", encoding="utf-8")
 
     def tearDown(self):
         set_cwd(self._orig_cwd)
@@ -35,7 +35,7 @@ class MultiEditScopeTests(unittest.TestCase):
             {"path": str(self.outside_file), "old_str": "OLD", "new_str": "NEW"},
         ])
         self.assertIn("refused outside-project path", out)
-        self.assertIn("OLD", self.outside_file.read_text())
+        self.assertIn("OLD", self.outside_file.read_text(encoding="utf-8"))
 
     def test_top_level_flag_allows_outside_edit(self):
         out = multi_edit(
@@ -43,7 +43,7 @@ class MultiEditScopeTests(unittest.TestCase):
             allow_outside_project=True,
         )
         self.assertIn("1 succeeded, 0 failed", out)
-        self.assertIn("NEW", self.outside_file.read_text())
+        self.assertIn("NEW", self.outside_file.read_text(encoding="utf-8"))
 
     def test_per_edit_flag_allows_outside_edit(self):
         out = multi_edit(edits=[
@@ -55,7 +55,7 @@ class MultiEditScopeTests(unittest.TestCase):
             },
         ])
         self.assertIn("1 succeeded, 0 failed", out)
-        self.assertIn("NEW", self.outside_file.read_text())
+        self.assertIn("NEW", self.outside_file.read_text(encoding="utf-8"))
 
     def test_repair_layer_preserves_per_edit_flag(self):
         # the nested-item repair must not strip the flag (it is now in the

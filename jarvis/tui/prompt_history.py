@@ -28,7 +28,7 @@ class PromptHistory:
         if self._path is None:
             return []
         try:
-            data = json.loads(self._path.read_text())
+            data = json.loads(self._path.read_text(encoding="utf-8"))
         except Exception:
             return []
         if not isinstance(data, list):

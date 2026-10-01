@@ -35,7 +35,7 @@ def _has_any_credentials_fast() -> bool:
         CODEX_OAUTH_FILE,
     ):
         try:
-            if path.exists() and path.read_text().strip():
+            if path.exists() and path.read_text(encoding="utf-8").strip():
                 return True
         except OSError:
             pass

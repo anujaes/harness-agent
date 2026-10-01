@@ -28,8 +28,8 @@ def api_connection_status(spec_id: str) -> ApiConnectionStatus:
         suffix = os.getenv(env_var, "")[-6:]
         return ApiConnectionStatus(True, "env", f"env {env_var} …{suffix}")
     try:
-        if file_path.exists() and file_path.read_text().strip():
-            suffix = file_path.read_text().strip()[-6:]
+        if file_path.exists() and file_path.read_text(encoding="utf-8").strip():
+            suffix = file_path.read_text(encoding="utf-8").strip()[-6:]
             return ApiConnectionStatus(True, "file", f"file {file_path.name} …{suffix}")
     except OSError:
         pass

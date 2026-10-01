@@ -66,7 +66,7 @@ def test_persist_codex_oauth_bundle(tmp_path, monkeypatch):
         api_key="sk-test",
     )
     assert bundle["openai_api_key"] == "sk-test"
-    saved = json.loads(path.read_text())
+    saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["access_token"] == "acc"
     assert saved["refresh_token"] == "ref"
 
@@ -120,7 +120,7 @@ def test_oauth_status_anthropic_and_codex_independent(tmp_path, monkeypatch):
         "refresh_token": "r",
         "id_token": "i",
         "expires_at": 9999999999,
-    }))
+    }), encoding="utf-8")
     assert oauth_connection_status(codex).connected is True
     assert oauth_connection_status(anthropic).connected is False
 
@@ -138,7 +138,7 @@ def test_activate_and_disconnect_codex_oauth(tmp_path, monkeypatch):
         "refresh_token": "ref",
         "id_token": "id",
         "expires_at": 9999999999,
-    }))
+    }), encoding="utf-8")
     spec = oauth_provider(OAUTH_ID_OPENAI_CODEX)
     assert spec
 

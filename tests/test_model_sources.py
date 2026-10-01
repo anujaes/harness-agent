@@ -86,7 +86,7 @@ def test_without_credentials_only_harness_agent_is_listed(no_credentials):
 
 def test_api_key_provider_listed_only_while_key_exists(no_credentials):
     key_file = no_credentials.OPENROUTER_KEY_FILE
-    key_file.write_text("sk-or-test\n")
+    key_file.write_text("sk-or-test\n", encoding="utf-8")
     assert PROVIDER_OPENROUTER in connected_model_sources()
     assert PROVIDER_OPENROUTER in _sources(all_model_picker_rows(cached=True))
 

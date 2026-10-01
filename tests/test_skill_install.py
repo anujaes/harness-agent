@@ -15,11 +15,11 @@ SKILL_MD = "---\nname: {name}\ndescription: {desc}\n---\n\n# {name}\nDo the thin
 def make_skill(root, name, desc="Does a thing when asked.", extra=None):
     folder = root / name
     folder.mkdir(parents=True)
-    (folder / "SKILL.md").write_text(SKILL_MD.format(name=name, desc=desc))
+    (folder / "SKILL.md").write_text(SKILL_MD.format(name=name, desc=desc), encoding="utf-8")
     for rel, body in (extra or {}).items():
         f = folder / rel
         f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(body)
+        f.write_text(body, encoding="utf-8")
     return folder
 
 
@@ -91,7 +91,7 @@ def test_install_single_skill_to_project(ext_env, repo):
     assert res["ok"], res
     dest = ext_env.proj / ".harness" / "skills" / "pdf"
     assert (dest / "SKILL.md").is_file() and (dest / "scripts" / "run.py").is_file()
-    assert json.loads((dest / si.PROVENANCE_FILE).read_text())["source"]
+    assert json.loads((dest / si.PROVENANCE_FILE).read_text(encoding="utf-8"))["source"]
     assert [s["name"] for s in sk.discover_skills(force=True)] == ["pdf"]
 
 
@@ -115,10 +115,10 @@ def test_unknown_skill_name_lists_what_exists(ext_env, repo):
 
 def test_overwrite_replaces(ext_env, repo):
     si.install_skills(str(repo / "skills" / "pdf"), scope="project")
-    (repo / "skills" / "pdf" / "SKILL.md").write_text(SKILL_MD.format(name="pdf", desc="Brand new description."))
+    (repo / "skills" / "pdf" / "SKILL.md").write_text(SKILL_MD.format(name="pdf", desc="Brand new description."), encoding="utf-8")
     assert not si.install_skills(str(repo / "skills" / "pdf"), scope="project")["ok"]
     assert si.install_skills(str(repo / "skills" / "pdf"), scope="project", overwrite=True)["ok"]
-    assert "Brand new" in (ext_env.proj / ".harness/skills/pdf/SKILL.md").read_text()
+    assert "Brand new" in (ext_env.proj / ".harness/skills/pdf/SKILL.md").read_text(encoding="utf-8")
 
 
 def test_global_install_turns_global_scope_on(ext_env, repo):
@@ -141,7 +141,7 @@ def test_confirm_can_decline(ext_env, repo):
 def test_bad_header_is_repaired_on_install(ext_env, tmp_path):
     folder = tmp_path / "Weird Skill"
     folder.mkdir()
-    (folder / "SKILL.md").write_text("---\nname: Weird_Skill Name\ndescription: " + "x" * 1500 + "\n---\nbody\n")
+    (folder / "SKILL.md").write_text("---\nname: Weird_Skill Name\ndescription: " + "x" * 1500 + "\n---\nbody\n", encoding="utf-8")
     res = si.install_skills(str(folder), scope="project")
     assert res["ok"], res
     (only,) = sk.discover_skills(force=True)
@@ -151,7 +151,7 @@ def test_bad_header_is_repaired_on_install(ext_env, tmp_path):
 def test_block_scalar_description_is_read(ext_env, tmp_path):
     folder = tmp_path / "s"
     folder.mkdir()
-    (folder / "SKILL.md").write_text("---\nname: folded\ndescription: >\n  Use this\n  for things\n---\nbody\n")
+    (folder / "SKILL.md").write_text("---\nname: folded\ndescription: >\n  Use this\n  for things\n---\nbody\n", encoding="utf-8")
     (info,) = si.inspect_source(str(folder))["skills"]
     assert info["usable"] and info["description"].startswith("Use this")
 
@@ -159,7 +159,7 @@ def test_block_scalar_description_is_read(ext_env, tmp_path):
 def test_missing_description_is_not_installable(ext_env, tmp_path):
     folder = tmp_path / "s"
     folder.mkdir()
-    (folder / "SKILL.md").write_text("---\nname: nodesc\n---\nbody\n")
+    (folder / "SKILL.md").write_text("---\nname: nodesc\n---\nbody\n", encoding="utf-8")
     res = si.install_skills(str(folder), scope="project")
     assert not res["ok"] and res["skipped"][0]["name"] == "nodesc"
 
@@ -281,8 +281,8 @@ def test_describe_installed_marks_hidden_global_skills(ext_env, repo):
 
 def test_update_refetches_from_recorded_source(ext_env, repo):
     si.install_skills(str(repo / "skills" / "pdf"), scope="project")
-    (repo / "skills" / "pdf" / "SKILL.md").write_text(SKILL_MD.format(name="pdf", desc="Updated text."))
+    (repo / "skills" / "pdf" / "SKILL.md").write_text(SKILL_MD.format(name="pdf", desc="Updated text."), encoding="utf-8")
     res = si.update_skill("pdf")
     assert res["ok"], res
-    assert "Updated text" in (ext_env.proj / ".harness/skills/pdf/SKILL.md").read_text()
+    assert "Updated text" in (ext_env.proj / ".harness/skills/pdf/SKILL.md").read_text(encoding="utf-8")
     assert not si.update_skill("ghost")["ok"]

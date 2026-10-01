@@ -7,12 +7,12 @@ from .. import state
 
 def save_pin():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    PIN_FILE.write_text(state.pinned_context)
+    PIN_FILE.write_text(state.pinned_context, encoding="utf-8")
 
 
 def save_aliases():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    ALIAS_FILE.write_text(json.dumps(state.aliases, indent=2))
+    ALIAS_FILE.write_text(json.dumps(state.aliases, indent=2), encoding="utf-8")
 
 
 def _global_settings_snapshot() -> dict:
@@ -124,5 +124,5 @@ def export_markdown(path: str) -> str:
                     else:
                         lines.append(f"```\n{body_str[:2000]}\n```")
         lines.append("")
-    pathlib.Path(path).write_text("\n".join(lines))
+    pathlib.Path(path).write_text("\n".join(lines), encoding="utf-8")
     return path

@@ -39,7 +39,7 @@ def test_headers_claim_the_current_version(version_file):
 
 def test_a_newer_minimum_is_learned_saved_and_sent(version_file):
     assert ot.learn_claude_code_version(REFUSAL.replace("NEED", "2.1.900")) == "2.1.900"
-    assert version_file.read_text() == "2.1.900"
+    assert version_file.read_text(encoding="utf-8") == "2.1.900"
     assert ot.oauth_client_headers()["User-Agent"] == "claude-cli/2.1.900 (external, cli)"
 
 
@@ -52,9 +52,9 @@ def test_nothing_to_learn(version_file):
 
 
 def test_a_saved_version_never_goes_below_the_baseline(version_file):
-    version_file.write_text("2.0.1")
+    version_file.write_text("2.0.1", encoding="utf-8")
     assert ot.claude_code_version() == CLAUDE_CODE_VERSION
-    version_file.write_text("not a version")
+    version_file.write_text("not a version", encoding="utf-8")
     assert ot.claude_code_version() == CLAUDE_CODE_VERSION
 
 
@@ -142,7 +142,7 @@ def test_refusal_is_healed_and_the_turn_goes_through(oauth_session, version_file
     assert final.usage.output_tokens == 5
     assert client.messages.calls == 2
     assert oauth_session.rebuilt == ["oauth"]
-    assert version_file.read_text() == "2.1.900"
+    assert version_file.read_text(encoding="utf-8") == "2.1.900"
     assert any("2.1.900" in line for line in oauth_session.printed)
 
 

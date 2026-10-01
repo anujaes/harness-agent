@@ -394,7 +394,7 @@ def _handle_auth():
         lines.append("auth: [bold]API key[/]")
         lines.append("source: " + ("env OPENROUTER_API_KEY" if has_env else f"{OPENROUTER_KEY_FILE}"))
         if not has_env and OPENROUTER_KEY_FILE.exists():
-            k = OPENROUTER_KEY_FILE.read_text().strip()
+            k = OPENROUTER_KEY_FILE.read_text(encoding="utf-8").strip()
             lines.append(f"key: sk-or-…{k[-6:]}")
         lines.append(f"model: [cyan]{state.MODEL}[/]")
     elif state.provider == PROVIDER_OPENCODE:
@@ -402,7 +402,7 @@ def _handle_auth():
         lines.append("auth: [bold]API key[/]")
         lines.append("source: " + ("env OPENCODE_API_KEY" if has_env else f"{OPENCODE_KEY_FILE}"))
         if not has_env and OPENCODE_KEY_FILE.exists():
-            k = OPENCODE_KEY_FILE.read_text().strip()
+            k = OPENCODE_KEY_FILE.read_text(encoding="utf-8").strip()
             lines.append(f"key: …{k[-6:]}")
         lines.append(f"model: [cyan]{state.MODEL}[/]")
     elif state.provider == PROVIDER_OPENCODE_ZEN:
@@ -413,7 +413,7 @@ def _handle_auth():
             lines.append("auth: [bold]OpenCode Zen API key[/]")
             lines.append("source: " + ("env OPENCODE_ZEN_API_KEY" if has_env else f"{OPENCODE_ZEN_KEY_FILE}"))
             if not has_env and OPENCODE_ZEN_KEY_FILE.exists():
-                k = OPENCODE_ZEN_KEY_FILE.read_text().strip()
+                k = OPENCODE_ZEN_KEY_FILE.read_text(encoding="utf-8").strip()
                 lines.append(f"key: …{k[-6:]}")
         lines.append(f"model: [cyan]{state.MODEL}[/]")
     else:

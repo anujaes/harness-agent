@@ -1,1 +1,1 @@
-"""jarvis — Jarvis-style macOS terminal agent (refactored package)."""
+"""jarvis — Jarvis-style terminal agent for macOS and Windows (refactored package)."""

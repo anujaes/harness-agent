@@ -87,7 +87,7 @@ def test_format_check_points_to_the_right_provider():
 
 
 def test_list_shows_status_and_never_the_key(keys, monkeypatch):
-    keys["openrouter"].write_text("sk-or-v1-secretsecretsecret1234")
+    keys["openrouter"].write_text("sk-or-v1-secretsecretsecret1234", encoding="utf-8")
     monkeypatch.setenv("KIMCHI_API_KEY", "kimchi-env-secret-5678")
     data = pv.list_providers()
     rows = {r["id"]: r for r in data["providers"]}
@@ -133,21 +133,21 @@ def test_saving_writes_the_cleaned_key_then_applies_it_on_the_main_thread(keys, 
     run = Recorder({"ok": True, "message": "OpenRouter connected"})
     res = pv.save_key("openrouter", 'export OPENROUTER_API_KEY="sk-or-v1-goodkey1234567890"', use=True, run_action=run)
     assert res["ok"] and res["verified"]
-    assert keys["openrouter"].read_text() == "sk-or-v1-goodkey1234567890"
+    assert keys["openrouter"].read_text(encoding="utf-8") == "sk-or-v1-goodkey1234567890"
     assert run.calls == [("provider_key_saved", {"id": "openrouter", "use": True, "replaced": False})]
 
 
 def test_replacing_a_key_says_so(keys, monkeypatch):
     import jarvis.commands.control as control
 
-    keys["kimchi"].write_text("kimchi-old-" + "k" * 16)
+    keys["kimchi"].write_text("kimchi-old-" + "k" * 16, encoding="utf-8")
     monkeypatch.setattr(pv, "verify_key", lambda card_id, key: "ok")
     monkeypatch.setattr(control, "apply_key_change", lambda provider, removed=False: "")
     monkeypatch.setattr(state, "provider", "kimchi")  # already the live provider
     run = lambda action, data: pv.run_provider_action(action, data, console_print=lambda *a: None)
     res = pv.save_key("kimchi", "kimchi-new-" + "n" * 16, use=True, run_action=run)
     assert res["ok"] and res["message"] == "Saved the new Kimchi key"
-    assert keys["kimchi"].read_text().startswith("kimchi-new-")
+    assert keys["kimchi"].read_text(encoding="utf-8").startswith("kimchi-new-")
 
 
 def test_unverifiable_key_is_saved_but_not_marked_verified(keys, monkeypatch):
@@ -186,7 +186,7 @@ def test_verify_key_reads_401_as_rejected(monkeypatch):
 def test_remove_key(keys, monkeypatch):
     import jarvis.commands.control as control
 
-    keys["kimchi"].write_text("kimchi-" + "k" * 20)
+    keys["kimchi"].write_text("kimchi-" + "k" * 20, encoding="utf-8")
     monkeypatch.setattr(control, "apply_key_change", lambda provider, removed=False: "")
     assert pv.remove_key("kimchi")["ok"]
     assert not keys["kimchi"].exists()
@@ -209,7 +209,7 @@ def test_use_needs_a_connection_first(keys):
 def test_use_switches_through_the_model_picker_path(keys, monkeypatch):
     import jarvis.commands.control as control
 
-    keys["openrouter"].write_text("sk-or-v1-" + "d" * 24)
+    keys["openrouter"].write_text("sk-or-v1-" + "d" * 24, encoding="utf-8")
     seen = {}
 
     def fake_select(model, *, source=""):
@@ -434,10 +434,10 @@ def test_http_routes_need_the_token_and_run_on_the_bridge(keys, monkeypatch):
 
 
 def test_provider_command_opens_in_the_browser_not_on_the_computer():
-    catalog = (STATIC / "js" / "catalog.js").read_text()
+    catalog = (STATIC / "js" / "catalog.js").read_text(encoding="utf-8")
     entry = re.search(r"\{[^{}]*cmd: '/provider'[^{}]*\}", catalog).group(0)
     assert "picker: 'provider'" in entry and "laptop" not in entry
     for cmd in ("/provider", "/login", "/key"):
         assert f"'{cmd}': 'provider'" in catalog
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'id="providers"' in html and 'id="providers-card"' in html

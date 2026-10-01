@@ -33,7 +33,7 @@ def load_codex_oauth_tokens() -> Optional[dict]:
     if not CODEX_OAUTH_FILE.exists():
         return None
     try:
-        data = json.loads(CODEX_OAUTH_FILE.read_text())
+        data = json.loads(CODEX_OAUTH_FILE.read_text(encoding="utf-8"))
         if not data.get("access_token") or not data.get("refresh_token"):
             return None
         return data

@@ -202,7 +202,7 @@ def test_stalled_client_is_told_to_resync():
 
 
 def test_index_only_references_existing_assets():
-    html = (STATIC / "index.html").read_text()
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
     refs = re.findall(r'(?:href|src)="/static/([^"]+)"', html)
     assert refs, "index.html should load local assets"
     for rel in refs:
@@ -213,13 +213,13 @@ def test_js_modules_import_existing_files_and_names():
     js = STATIC / "js"
     exports: dict[str, set[str]] = {}
     for f in js.glob("*.js"):
-        src = f.read_text()
+        src = f.read_text(encoding="utf-8")
         names = set(re.findall(r"export (?:async )?(?:function|const|let) ([\w$]+)", src))
         for group in re.findall(r"export \{([^}]+)\}", src):
             names |= {n.strip().split(" as ")[-1] for n in group.split(",") if n.strip()}
         exports[f.name] = names
     for f in js.glob("*.js"):
-        for names, mod in re.findall(r"import \{([^}]+)\} from '\./([\w.]+)'", f.read_text()):
+        for names, mod in re.findall(r"import \{([^}]+)\} from '\./([\w.]+)'", f.read_text(encoding="utf-8")):
             assert mod in exports, f"{f.name} imports missing {mod}"
             for name in (n.strip() for n in names.split(",") if n.strip()):
                 assert name in exports[mod], f"{f.name} imports {name} not exported by {mod}"
@@ -227,8 +227,8 @@ def test_js_modules_import_existing_files_and_names():
 
 def test_every_element_id_the_scripts_look_up_exists():
     """A typo in `$('some-id')` fails silently in the browser (null, no error)."""
-    js = {f.name: f.read_text() for f in (STATIC / "js").glob("*.js")}
-    markup = (STATIC / "index.html").read_text() + "\n".join(js.values())
+    js = {f.name: f.read_text(encoding="utf-8") for f in (STATIC / "js").glob("*.js")}
+    markup = (STATIC / "index.html").read_text(encoding="utf-8") + "\n".join(js.values())
     missing: dict[str, list[str]] = {}
     built_by_helpers = {"pv-quick"}     # providers.js field('pv-quick', …) writes the id
     for name, src in js.items():
@@ -239,16 +239,16 @@ def test_every_element_id_the_scripts_look_up_exists():
 
 
 def test_every_icon_used_is_bundled():
-    src = (STATIC / "js" / "icons.js").read_text()
+    src = (STATIC / "js" / "icons.js").read_text(encoding="utf-8")
     bundled = set(json.loads(re.search(r"const ICONS = (\{.*\});", src).group(1)))
     used: set[str] = set()
     for f in (STATIC / "js").glob("*.js"):
         if f.name == "icons.js":
             continue
-        text = f.read_text()
+        text = f.read_text(encoding="utf-8")
         used |= set(re.findall(r"icon\('([a-z0-9-]+)'\)", text))
         used |= set(re.findall(r"icon: '([a-z0-9-]+)'", text))
-    used |= set(re.findall(r'data-icon="([a-z0-9-]+)"', (STATIC / "index.html").read_text()))
+    used |= set(re.findall(r'data-icon="([a-z0-9-]+)"', (STATIC / "index.html").read_text(encoding="utf-8")))
     assert used - bundled == set()
 
 

@@ -469,7 +469,7 @@ def _has_anthropic_api() -> bool:
     from .paths import KEY_FILE
 
     try:
-        return KEY_FILE.exists() and bool(KEY_FILE.read_text().strip())
+        return KEY_FILE.exists() and bool(KEY_FILE.read_text(encoding="utf-8").strip())
     except OSError:
         return False
 
@@ -530,7 +530,7 @@ def connected_model_sources() -> list[str]:
     else:
         from .paths import OPENROUTER_KEY_FILE
         try:
-            if OPENROUTER_KEY_FILE.exists() and OPENROUTER_KEY_FILE.read_text().strip():
+            if OPENROUTER_KEY_FILE.exists() and OPENROUTER_KEY_FILE.read_text(encoding="utf-8").strip():
                 sources.append(PROVIDER_OPENROUTER)
         except OSError:
             pass
@@ -539,7 +539,7 @@ def connected_model_sources() -> list[str]:
     else:
         from .paths import OPENCODE_KEY_FILE
         try:
-            if OPENCODE_KEY_FILE.exists() and OPENCODE_KEY_FILE.read_text().strip():
+            if OPENCODE_KEY_FILE.exists() and OPENCODE_KEY_FILE.read_text(encoding="utf-8").strip():
                 sources.append(PROVIDER_OPENCODE)
         except OSError:
             pass
@@ -548,7 +548,7 @@ def connected_model_sources() -> list[str]:
     else:
         from .paths import OPENCODE_ZEN_KEY_FILE
         try:
-            if OPENCODE_ZEN_KEY_FILE.exists() and OPENCODE_ZEN_KEY_FILE.read_text().strip():
+            if OPENCODE_ZEN_KEY_FILE.exists() and OPENCODE_ZEN_KEY_FILE.read_text(encoding="utf-8").strip():
                 sources.append(PROVIDER_OPENCODE_ZEN)
         except OSError:
             pass
@@ -557,7 +557,7 @@ def connected_model_sources() -> list[str]:
     else:
         from .paths import KIMCHI_KEY_FILE
         try:
-            if KIMCHI_KEY_FILE.exists() and KIMCHI_KEY_FILE.read_text().strip():
+            if KIMCHI_KEY_FILE.exists() and KIMCHI_KEY_FILE.read_text(encoding="utf-8").strip():
                 sources.append(PROVIDER_KIMCHI)
         except OSError:
             pass
@@ -666,7 +666,7 @@ def connected_providers() -> set[str]:
 
     def _has_content(p) -> bool:
         try:
-            return p.exists() and bool(p.read_text().strip())
+            return p.exists() and bool(p.read_text(encoding="utf-8").strip())
         except OSError:
             return False
 

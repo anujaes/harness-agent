@@ -69,7 +69,7 @@ def test_mcp_add_stdio_is_approved_and_written(ext_env, approving):
     out = ext.mcp_add(source="npx -y @acme/tool-mcp", scope="project", connect=False)
     assert "✓ tool (project) added" in out
     assert "runs: npx -y @acme/tool-mcp" in approving[0]
-    assert "tool" in json.loads((ext_env.proj / ".mcp.json").read_text())["mcpServers"]
+    assert "tool" in json.loads((ext_env.proj / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
 
 
 def test_mcp_add_declined(ext_env, monkeypatch):
@@ -104,7 +104,7 @@ def test_mcp_add_asks_for_a_missing_key_with_a_hidden_prompt(ext_env, approving,
     )
     assert calls and calls[0][1] is True and "BRAVE_API_KEY" in calls[0][0]
     assert secrets.get_secret("BRAVE_API_KEY") == "sekret-123"
-    assert "sekret-123" not in out and "sekret-123" not in (ext_env.proj / ".mcp.json").read_text()
+    assert "sekret-123" not in out and "sekret-123" not in (ext_env.proj / ".mcp.json").read_text(encoding="utf-8")
 
 
 def test_mcp_add_key_prompt_can_be_skipped(ext_env, approving, monkeypatch):
@@ -152,7 +152,7 @@ def make_repo(root):
     for name in ("pdf", "docx"):
         d = root / "skills" / name
         d.mkdir(parents=True)
-        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Handles {name} files.\n---\nbody\n")
+        (d / "SKILL.md").write_text(f"---\nname: {name}\ndescription: Handles {name} files.\n---\nbody\n", encoding="utf-8")
 
 
 def test_skill_install_asks_which_when_many(ext_env, approving, tmp_path):

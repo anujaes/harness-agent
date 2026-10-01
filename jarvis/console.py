@@ -13,16 +13,23 @@ try:
 except ModuleNotFoundError:
     root = pathlib.Path(__file__).resolve().parent.parent
     script = root / "agent.py"
-    venv_python = root / ".venv" / "bin" / "python"
+    if sys.platform == "win32":
+        venv_python = root / ".venv" / "Scripts" / "python.exe"
+        activate = r".venv\Scripts\activate"
+        system_python = "Your `python` is a system-wide interpreter"
+    else:
+        venv_python = root / ".venv" / "bin" / "python"
+        activate = "source .venv/bin/activate"
+        system_python = "Your `python3` is the system (e.g. Homebrew) interpreter"
     print(
-        "Your `python3` is the system (e.g. Homebrew) interpreter. "
+        f"{system_python}. "
         "`anthropic` and `rich` are installed only in this project's `.venv`, "
         "so that interpreter cannot import them.\n\n"
         "Run:\n\n"
         f"  {venv_python} {script}\n\n"
         "Or from the project folder:\n\n"
         f"  cd {root}\n"
-        "  source .venv/bin/activate\n"
+        f"  {activate}\n"
         f"  python {script.name}\n",
         file=sys.stderr,
     )
