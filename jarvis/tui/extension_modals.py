@@ -13,6 +13,7 @@ Everything slow (network, connecting, unpacking) runs on a worker thread.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 from typing import Any
 
@@ -46,7 +47,7 @@ def short_path(p: str | pathlib.Path) -> str:
         cwd = str(pathlib.Path.cwd())
     except OSError:
         cwd = ""
-    if cwd and (s == cwd or s.startswith(cwd + "/")):
+    if cwd and (s == cwd or s.startswith(cwd + os.sep) or s.startswith(cwd + "/")):
         return "." + s[len(cwd):]
     home = str(pathlib.Path.home())
     return "~" + s[len(home):] if s.startswith(home) else s
@@ -880,7 +881,7 @@ class SkillInstallScreen(_DismissMixin, TuiModalScreen["dict | None"]):
             self._info, self._selected = None, set()
             self._paint_list()
             self.query_one("#sk_result", Static).update("")
-        if len(text) >= 8 and ("/" in text or text.startswith(("~", "."))):
+        if len(text) >= 8 and ("/" in text or "\\" in text or text.startswith(("~", "."))):
             self._debounce = self.set_timer(0.8, lambda: self._inspect(text))
 
     def on_input_submitted(self, event: Input.Submitted) -> None:

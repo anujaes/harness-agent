@@ -19,9 +19,6 @@ Designed to make ``/agent`` the only agent command a user ever needs.
 """
 from __future__ import annotations
 
-import os
-import subprocess
-
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import CenterMiddle, Vertical
@@ -32,6 +29,7 @@ from textual.widgets.option_list import Option
 from ..storage import agents as ag
 from ..commands import agent as agent_cmd
 from .. import state
+from ..utils.editor import open_in_editor
 from .modal_chrome import (
     TUI_MODAL_CHROME_CSS,
     TuiModalScreen,
@@ -370,12 +368,10 @@ class AgentPickerScreen(TuiModalScreen[dict | str | None]):
             ag.invalidate_cache()
             self._populate()
             # Try to open the new file in $EDITOR.
-            editor = os.environ.get("EDITOR")
-            if editor:
-                try:
-                    subprocess.Popen([editor, msg])
-                except Exception:
-                    pass
+            try:
+                open_in_editor(msg)
+            except Exception:
+                pass
             self._notify(f"✓ created {msg}")
 
         self.app.push_screen(_NewAgentScreen(scope=scope), after)
@@ -389,12 +385,10 @@ class AgentPickerScreen(TuiModalScreen[dict | str | None]):
         if not rec:
             self._notify(f"agent '{name}' not found", error=True)
             return
-        editor = os.environ.get("EDITOR")
-        if not editor:
-            self._notify(f"$EDITOR not set — file: {rec['path']}", error=True)
-            return
         try:
-            subprocess.Popen([editor, rec["path"]])
+            if not open_in_editor(rec["path"]):
+                self._notify(f"$EDITOR not set — file: {rec['path']}", error=True)
+                return
             self._notify(f"opened {rec['path']} in $EDITOR")
         except Exception as e:
             self._notify(f"could not launch $EDITOR: {e}", error=True)

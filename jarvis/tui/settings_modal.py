@@ -11,8 +11,6 @@ User interaction:
 """
 from __future__ import annotations
 
-import os
-import subprocess
 from typing import Any
 
 from textual.app import ComposeResult
@@ -24,6 +22,7 @@ from textual.widgets.option_list import Option
 
 from ..storage.settings import get_settings, SETTINGS_FILE, DEFAULTS
 from .. import state
+from ..utils.editor import open_in_editor
 from .modal_chrome import TUI_MODAL_CHROME_CSS, TuiModalScreen, _ellipsis
 from .modal_chrome import picker_row, section_header
 from .mouse_toggle import enable_mouse, disable_mouse
@@ -289,12 +288,10 @@ class SettingsModalScreen(TuiModalScreen[None]):
         self._notify(str(SETTINGS_FILE))
 
     def action_open_editor(self) -> None:
-        editor = os.environ.get("EDITOR")
-        if not editor:
-            self._notify(f"$EDITOR not set — path: {SETTINGS_FILE}", error=True)
-            return
         try:
-            subprocess.Popen([editor, str(SETTINGS_FILE)])
+            if not open_in_editor(SETTINGS_FILE):
+                self._notify(f"$EDITOR not set — path: {SETTINGS_FILE}", error=True)
+                return
             self._notify(f"opened {SETTINGS_FILE} in $EDITOR")
         except Exception as e:
             self._notify(f"could not launch $EDITOR: {e}", error=True)

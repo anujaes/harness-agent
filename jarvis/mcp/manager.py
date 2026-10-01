@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import shlex
 from typing import Any
 
 from rich.align import Align
@@ -14,6 +13,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .. import state
+from ..utils.cmdline import split_command
 from .config import (
     MCPConfig,
     MCP_GLOBAL_CONFIG_FILE,
@@ -41,7 +41,7 @@ def handle_mcp_command(arg: str) -> Any:
     if cmd in ("add", "register") and not _is_legacy_add(rest):
         return _cmd_add_source(rest)
     try:
-        parts = shlex.split(arg)
+        parts = split_command(arg)
     except ValueError as exc:
         return Text.from_markup(f"[red]Couldn't read that:[/] {exc}")
     cmd = parts[0].lower()

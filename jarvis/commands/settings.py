@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shlex
-import subprocess
 from typing import Any
 
 from rich.console import Group
@@ -21,6 +18,8 @@ from ..storage.settings import (
     reload_settings,
 )
 from .. import state
+from ..utils.cmdline import split_command
+from ..utils.editor import editor_label, open_in_editor
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -186,15 +185,14 @@ def _cmd_path(_args: list[str]):
 
 
 def _cmd_edit(_args: list[str]):
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL") or "nano"
     if not SETTINGS_FILE.exists():
         # Touch the file with current defaults so the user can edit something.
         get_settings().save()
     try:
-        subprocess.run([editor, str(SETTINGS_FILE)], check=False)
-    except FileNotFoundError:
+        open_in_editor(SETTINGS_FILE, wait=True, fallback=True)
+    except OSError:
         return Text.from_markup(
-            f"[red]editor not found: [bold]{editor}[/].[/] "
+            f"[red]editor not found: [bold]{editor_label(fallback=True)}[/].[/] "
             f"[dim]set $EDITOR or open[/] [cyan]{SETTINGS_FILE}[/] [dim]manually[/]"
         )
     # Re-apply after edit
@@ -245,7 +243,7 @@ def handle_settings(cmd: str, arg: str):
         console.print(_render_settings_panel())
         return True, None
 
-    parts = shlex.split(arg)
+    parts = split_command(arg)
     sub = parts[0].lower()
     sub_args = parts[1:]
 

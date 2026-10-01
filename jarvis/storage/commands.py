@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import pathlib
 import re
-import shlex
 import shutil
 import time
 from typing import Optional
@@ -56,6 +55,7 @@ from ..constants import (
     PROJECT_COMMANDS_DIRNAME,
 )
 from .. import state
+from ..utils.cmdline import split_command
 
 # Directories under the project root to scan (in priority order — first wins).
 PROJECT_COMMAND_DIRS = [
@@ -270,7 +270,7 @@ def expand_template(body: str, args: str) -> str:
     """
     args = (args or "").strip()
     try:
-        positional = shlex.split(args)
+        positional = split_command(args)
     except ValueError:
         positional = args.split()
 

@@ -20,11 +20,11 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import urllib.parse
 from typing import Any, Callable
 
 from .. import state
+from ..utils.cmdline import looks_like_path, split_command
 from . import catalog
 from . import secrets as mcp_secrets
 from .auth import coordinator as auth_coordinator, has_saved_login
@@ -239,7 +239,7 @@ def _stdio_entry(command: str, args: list[str], env: dict[str, str] | None = Non
 
 def _parse_launcher(text: str) -> dict[str, Any]:
     try:
-        tokens = shlex.split(text)
+        tokens = split_command(text)
     except ValueError as exc:
         raise ParseError(f"Couldn't read that command ({exc}).") from exc
     env, tokens = _split_env_prefix(tokens)
@@ -251,7 +251,7 @@ def _parse_launcher(text: str) -> dict[str, Any]:
 def _parse_add_command(text: str) -> dict[str, Any]:
     """``claude mcp add --transport http linear https://mcp.linear.app/mcp`` and its cousins."""
     try:
-        toks = shlex.split(text.replace("\\\n", " "))
+        toks = split_command(text.replace("\\\n", " "))
     except ValueError as exc:
         raise ParseError(f"Couldn't read that command ({exc}).") from exc
     idx = next((i for i, t in enumerate(toks) if t.lower() == "add"), -1)
@@ -442,7 +442,10 @@ def _parse_source(text: str) -> list[dict[str, Any]]:
         return _parse_json(raw)
     if _ADD_CMD_RE.match(raw):
         return [_parse_add_command(raw)]
-    head = raw.split(None, 1)[0]
+    try:
+        head = split_command(raw)[0]  # unquotes "C:\Program Files\…\server.exe"
+    except (ValueError, IndexError):
+        head = raw.split(None, 1)[0]
     if re.match(r"^https?://\S+$", raw):
         if _github_repo(raw) and not urllib.parse.urlparse(raw).path.lower().endswith(("/mcp", "/sse")):
             return [_from_github_readme(raw)]
@@ -453,7 +456,7 @@ def _parse_source(text: str) -> list[dict[str, Any]]:
     item = catalog.lookup(raw)
     if item:
         return [_from_catalog(item)]
-    if head in _LAUNCHERS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", head) or head.startswith(("./", "/", "~")):
+    if head in _LAUNCHERS or re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", head) or looks_like_path(head):
         return [_parse_launcher(raw)]
     if " " not in raw and _NPM_RE.match(raw) and (raw.startswith("@") or "mcp" in raw.lower()):
         return [_spec(_name_from_command("npx", ["-y", raw]), _stdio_entry("npx", ["-y", raw]))]

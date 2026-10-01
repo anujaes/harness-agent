@@ -15,7 +15,6 @@ Syntax:
 """
 from __future__ import annotations
 
-import os
 import pathlib
 import subprocess
 
@@ -28,6 +27,7 @@ from ..constants import (
 )
 from ..storage import agents as ag
 from .. import state
+from ..utils.editor import editor_label, open_in_editor
 
 
 # Session-level: which scope does `/agent new` write to. Not persisted —
@@ -165,7 +165,7 @@ def handle_agent(cmd: str, arg: str):
         ok, msg = ag.scaffold_agent(name, scope=_NEW_SCOPE, description=desc)
         if ok:
             console.print(f"[green]✓[/] Created [cyan]{msg}[/]  [dim](/agent {name} to activate)[/]")
-            editor = os.environ.get("EDITOR")
+            editor = editor_label()
             if editor:
                 console.print(f"  [dim]edit with: $EDITOR ({editor}) {msg}[/]")
         else:
@@ -181,16 +181,14 @@ def handle_agent(cmd: str, arg: str):
             console.print(f"[red]agent '{rest}' not found[/]")
             return True, None
         path = rec["path"]
-        editor = os.environ.get("EDITOR")
-        if editor:
-            try:
-                subprocess.Popen([editor, path])
+        try:
+            if open_in_editor(path):
                 console.print(f"[green]✓[/] opened in $EDITOR: [cyan]{path}[/]")
-            except Exception as e:
-                console.print(f"[yellow]could not launch $EDITOR ({editor}): {e}[/]")
-                console.print(f"  [dim]path: {path}[/]")
-        else:
-            console.print(f"[cyan]{path}[/]  [dim](\\$EDITOR not set)[/]")
+            else:
+                console.print(f"[cyan]{path}[/]  [dim](\\$EDITOR not set)[/]")
+        except Exception as e:
+            console.print(f"[yellow]could not launch $EDITOR ({editor_label()}): {e}[/]")
+            console.print(f"  [dim]path: {path}[/]")
         return True, None
 
     if sub == "init":

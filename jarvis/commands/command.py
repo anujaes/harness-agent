@@ -24,14 +24,12 @@ Direct trigger (handled by dispatch as a fallback for unknown slashes):
 """
 from __future__ import annotations
 
-import os
-import subprocess
-
 from rich.markup import escape
 
 from ..console import console, Panel, Markdown
 from ..storage import commands as cc
 from .. import state
+from ..utils.editor import editor_label, open_in_editor
 
 
 # Session-level: which scope `/command new` writes to (mirrors /agent scope).
@@ -149,7 +147,7 @@ def handle_command(cmd: str, arg: str):
                 f"[green]✓[/] Created [cyan]{msg}[/]\n"
                 f"  [dim]edit the template, then trigger with /{clean} [args][/]"
             )
-            editor = os.environ.get("EDITOR")
+            editor = editor_label()
             if editor:
                 console.print(f"  [dim]edit with: $EDITOR ({editor}) {msg}  — or /command edit {clean}[/]")
         else:
@@ -165,16 +163,14 @@ def handle_command(cmd: str, arg: str):
             console.print(f"[red]command '{rest}' not found[/]")
             return True, None
         path = rec["path"]
-        editor = os.environ.get("EDITOR")
-        if editor:
-            try:
-                subprocess.Popen([editor, path])
+        try:
+            if open_in_editor(path):
                 console.print(f"[green]✓[/] opened in $EDITOR: [cyan]{path}[/]")
-            except Exception as e:
-                console.print(f"[yellow]could not launch $EDITOR ({editor}): {e}[/]")
-                console.print(f"  [dim]path: {path}[/]")
-        else:
-            console.print(f"[cyan]{path}[/]  [dim](\\$EDITOR not set)[/]")
+            else:
+                console.print(f"[cyan]{path}[/]  [dim](\\$EDITOR not set)[/]")
+        except Exception as e:
+            console.print(f"[yellow]could not launch $EDITOR ({editor_label()}): {e}[/]")
+            console.print(f"  [dim]path: {path}[/]")
         return True, None
 
     if sub == "show":

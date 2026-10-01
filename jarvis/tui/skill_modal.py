@@ -29,6 +29,7 @@ from textual.widgets.option_list import Option
 from ..storage import skill_install as si
 from ..storage import skills as sk
 from .. import state
+from ..utils.cmdline import looks_like_path
 from .modal_chrome import (
     TUI_MODAL_CHROME_CSS, TuiModalScreen, ROW_NAME_WIDTH, empty_row, hint_line, picker_row, section_header,
 )
@@ -369,8 +370,9 @@ class SkillBrowserScreen(TuiModalScreen[str | None]):
 def _format_skill_row(skill: dict, query: str = ""):
     active = skill.get("active", True)
     origin = skill.get("origin") or ""
-    if origin.startswith(("/", "~", ".")):
-        origin = origin.rstrip("/").rsplit("/", 1)[-1]  # a local folder: its name, not the whole path
+    if origin.startswith(("/", "~", ".")) or looks_like_path(origin):
+        # a local folder: its name, not the whole path
+        origin = origin.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
     if len(origin) > 26:
         origin = origin[:25] + "…"
     right = skill.get("scope", "")
