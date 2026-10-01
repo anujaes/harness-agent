@@ -11,6 +11,7 @@ import re
 import unicodedata
 
 from .constants import CWD
+from .utils.osinfo import redirect_known_folder
 
 
 def _unicode_space_key(name: str) -> str:
@@ -33,6 +34,10 @@ def robust_resolve(path: str, cwd: pathlib.Path | None = None) -> pathlib.Path:
     base = (cwd / raw).resolve() if not os.path.isabs(raw) else pathlib.Path(raw).resolve()
     if base.exists():
         return base
+    # Windows: ~\Desktop, ~\Documents … may really live under OneDrive.
+    redirected = redirect_known_folder(base)
+    if redirected != base:
+        return robust_resolve(str(redirected), cwd)
     parent, name = base.parent, base.name
     if not name or not parent.is_dir():
         return base

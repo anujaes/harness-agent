@@ -36,6 +36,84 @@ def os_label() -> str:
     return sys.platform
 
 
+# Windows "known folders" users and models refer to by their ~\Name form.
+_KNOWN_FOLDER_IDS = {
+    "Desktop": "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}",
+    "Documents": "{FDD39AD0-238F-46AF-ADB4-6C85480369C7}",
+    "Downloads": "{374DE290-123F-4565-9164-39C4925E467B}",
+    "Pictures": "{33E28130-4E1E-4676-835A-98395C3BC3BB}",
+    "Music": "{4BD8D571-6D19-48D3-BE97-422220080E43}",
+    "Videos": "{18989B1D-99B5-455B-841C-AB7C74E4DDFC}",
+}
+
+
+def _known_folder_path(folder_id: str) -> str | None:
+    import ctypes
+    import uuid
+    from ctypes import wintypes
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("Data1", wintypes.DWORD), ("Data2", wintypes.WORD),
+                    ("Data3", wintypes.WORD), ("Data4", ctypes.c_ubyte * 8)]
+
+    u = uuid.UUID(folder_id)
+    guid = GUID(u.time_low, u.time_mid, u.time_hi_version, (ctypes.c_ubyte * 8)(*u.bytes[8:]))
+    out = ctypes.c_wchar_p()
+    shell32 = ctypes.WinDLL("shell32")
+    shell32.SHGetKnownFolderPath.argtypes = [ctypes.POINTER(GUID), wintypes.DWORD, wintypes.HANDLE,
+                                             ctypes.POINTER(ctypes.c_wchar_p)]
+    try:
+        if shell32.SHGetKnownFolderPath(ctypes.byref(guid), 0, None, ctypes.byref(out)) != 0:
+            return None
+        return out.value
+    finally:
+        if out:
+            ctypes.windll.ole32.CoTaskMemFree(out)
+
+
+@functools.lru_cache(maxsize=1)
+def known_folders() -> dict[str, Path]:
+    """Where Desktop, Documents, Downloads … really live (Windows only; ``{}`` elsewhere).
+
+    OneDrive folder backup and user relocation move them away from
+    ``%USERPROFILE%\\Desktop`` etc., e.g. to ``%USERPROFILE%\\OneDrive\\Desktop``.
+    """
+    if not IS_WINDOWS:
+        return {}
+    found: dict[str, Path] = {}
+    for name, folder_id in _KNOWN_FOLDER_IDS.items():
+        try:
+            path = _known_folder_path(folder_id)
+        except OSError:
+            path = None
+        if path:
+            found[name] = Path(path)
+    return found
+
+
+def redirect_known_folder(path: Path) -> Path:
+    """Map ``~\\Desktop\\x`` to the real Desktop when Windows keeps it elsewhere.
+
+    Only applies when the literal path doesn't exist and its first component
+    under the home folder names a relocated known folder; otherwise ``path``
+    is returned unchanged (always, off Windows).
+    """
+    folders = known_folders()
+    if not folders or path.exists():
+        return path
+    try:
+        rel = path.relative_to(Path.home())
+    except ValueError:
+        return path
+    if not rel.parts:
+        return path
+    head = rel.parts[0].casefold()
+    for name, real in folders.items():
+        if name.casefold() == head and real != Path.home() / name:
+            return real.joinpath(*rel.parts[1:])
+    return path
+
+
 def _git_bash_candidates() -> list[Path]:
     """Git for Windows' bash.exe locations, most specific first.
 

@@ -1,7 +1,16 @@
 """System prompt string — base + optional coding addon."""
 import pathlib
 
-from ..utils.osinfo import IS_WINDOWS, os_label, shell_label
+from ..utils.osinfo import IS_WINDOWS, known_folders, os_label, shell_label
+
+
+def _folders_line() -> str:
+    """Windows: where the user's folders really are (OneDrive often moves Desktop/Documents)."""
+    folders = known_folders()
+    if not folders:
+        return ""
+    listed = ", ".join(f"{name} = {path}" for name, path in folders.items())
+    return f"\n- USER FOLDERS (use these exact paths; ~\\Desktop etc. may not exist): {listed}"
 
 
 def _platform_text() -> dict[str, str]:
@@ -18,6 +27,7 @@ def _platform_text() -> dict[str, str]:
                           "`python3`). For Windows-specific work (registry, services, COM, WinRT) use the "
                           "powershell tool.",
             "fast_find": "fast_find(query, ext, kind, path) — Everything / Windows Search index, 1-3s.",
+            "folders_line": _folders_line(),
             "gui_steps": (
                 "3. powershell for: Outlook, Excel, Word (COM via New-Object -ComObject), Explorer, registry, "
                 "services, processes, settings pages (open_url 'ms-settings:…').\n"
@@ -38,6 +48,7 @@ def _platform_text() -> dict[str, str]:
                     "mac_control",
         "shell_line": "",
         "fast_find": "fast_find(query, ext, kind, path) — Spotlight, milliseconds.",
+        "folders_line": "",
         "gui_steps": (
             "3. AppleScript for: Messages, Mail, Safari, Music, Finder, Notes, Reminders, Calendar.\n"
             "4. WhatsApp: no AppleScript — use focus_app → read_ui → keyboard.\n"
@@ -76,7 +87,7 @@ TOOLS (grouped)
 - NATIVE VISION: If you are a multimodal model AND the user provides a single image path for visual analysis (not text extraction), the image is sent to you as a native image block — you can see it directly. Use read_image_text/read_images_text for text extraction from dense documents or bulk scans.
 
 FILESYSTEM
-- {p['fast_find']} For repo code use search_code; for filename patterns use glob_files(pattern, path).
+- {p['fast_find']} For repo code use search_code; for filename patterns use glob_files(pattern, path).{p['folders_line']}
 - Codebase tasks are project-scoped to {cwd}. Do not read/list/search/edit outside this project unless the user explicitly asks for an outside path or whole-computer task.
 - When the user says "this project", "my project", "the app", "the repo", or asks a code question without a path, treat {cwd} as the project root and inspect files there before answering.
 - Save tokens: reuse files already visible in the conversation. Do not reread broad files just to refresh context; use search_code or read_file offset/limit for the exact missing lines.

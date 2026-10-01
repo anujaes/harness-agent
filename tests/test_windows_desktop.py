@@ -461,6 +461,62 @@ def test_long_scripts_go_through_a_temp_file():
     assert ps(script) == "long ok"
 
 
+# ── known folders (OneDrive-relocated Desktop / Documents …) ────────────────
+
+def _fake_known_folders(monkeypatch, tmp_path):
+    from jarvis.utils import osinfo
+
+    home = tmp_path / "home"
+    real_desktop = home / "OneDrive" / "Desktop"
+    (real_desktop / "notes").mkdir(parents=True)
+    (real_desktop / "notes" / "todo.txt").write_text("x", encoding="utf-8")
+    monkeypatch.setattr(osinfo, "known_folders", lambda: {"Desktop": real_desktop, "Downloads": home / "Downloads"})
+    monkeypatch.setattr(osinfo.Path, "home", classmethod(lambda cls: home))
+    return home, real_desktop
+
+
+def test_home_desktop_paths_follow_a_relocated_desktop(monkeypatch, tmp_path):
+    from jarvis.utils.osinfo import redirect_known_folder
+
+    home, real = _fake_known_folders(monkeypatch, tmp_path)
+    assert redirect_known_folder(home / "Desktop") == real
+    assert redirect_known_folder(home / "desktop" / "notes" / "todo.txt") == real / "notes" / "todo.txt"
+    # not relocated / not a known folder / outside home → unchanged
+    assert redirect_known_folder(home / "Downloads" / "a.zip") == home / "Downloads" / "a.zip"
+    assert redirect_known_folder(home / "Projects") == home / "Projects"
+    assert redirect_known_folder(tmp_path / "elsewhere" / "Desktop") == tmp_path / "elsewhere" / "Desktop"
+
+
+def test_robust_resolve_finds_files_on_a_relocated_desktop(monkeypatch, tmp_path):
+    import jarvis.path_resolve as path_resolve
+
+    home, real = _fake_known_folders(monkeypatch, tmp_path)
+    monkeypatch.setattr(path_resolve, "redirect_known_folder",
+                        __import__("jarvis.utils.osinfo", fromlist=["x"]).redirect_known_folder)
+    got = path_resolve.robust_resolve(str(home / "Desktop" / "notes" / "todo.txt"))
+    assert got == (real / "notes" / "todo.txt").resolve()
+
+
+def test_known_folders_are_empty_off_windows():
+    from jarvis.utils import osinfo
+
+    if sys.platform != "win32":
+        assert osinfo.known_folders() == {}
+
+
+@win_only
+def test_known_folders_match_the_shell_on_this_machine():
+    import os
+
+    from jarvis.utils.osinfo import known_folders
+
+    # The suite runs with a scratch USERPROFILE (conftest), so folders that
+    # would live under it (Downloads …) may not resolve here; the Desktop does.
+    folders = known_folders()
+    assert "Desktop" in folders
+    assert all(os.path.isabs(p) for p in folders.values())
+
+
 # ── process hygiene ─────────────────────────────────────────────────────────
 
 @win_only
