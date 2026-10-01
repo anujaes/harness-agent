@@ -9,6 +9,7 @@ from http.server import ThreadingHTTPServer
 from typing import TYPE_CHECKING
 
 from .. import file_changes
+from ..utils.osinfo import IS_WINDOWS
 from .bridge import WebBridge
 from .handler import WebHandler
 from .sync import StateWatcher
@@ -17,13 +18,29 @@ if TYPE_CHECKING:
     from ..tui.app import JarvisTUI
 
 
+def _prepare_listen_socket(sock: socket.socket) -> None:
+    """Allow a quick rebind after restart without ever sharing a busy port.
+
+    On POSIX ``SO_REUSEADDR`` only skips TIME_WAIT. On Windows it lets a second
+    socket bind a port that is *actively listening* (both then get traffic, and
+    a busy port looks free), while a plain bind already ignores TIME_WAIT — so
+    Windows gets no option at all.
+    """
+    if not IS_WINDOWS:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+
 class _JarvisHTTPServer(ThreadingHTTPServer):
-    allow_reuse_address = True
+    allow_reuse_address = False  # handled per-OS in server_bind
     daemon_threads = True
     # socketserver's default listen backlog is 5. The page loads ~20 ES
     # modules at once (plus the SSE stream), and on macOS connections past
     # the backlog are reset (net::ERR_CONNECTION_RESET) — the app never boots.
     request_queue_size = 128
+
+    def server_bind(self) -> None:
+        _prepare_listen_socket(self.socket)
+        super().server_bind()
 
 
 def resolve_web_port(host: str, preferred: int, *, max_tries: int = 20) -> int:
@@ -33,7 +50,7 @@ def resolve_web_port(host: str, preferred: int, *, max_tries: int = 20) -> int:
         port = preferred + offset
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                _prepare_listen_socket(sock)
                 sock.bind((host, port))
             return port
         except OSError as exc:

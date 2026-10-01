@@ -28,6 +28,7 @@ from mcp.client.stdio import get_default_environment, stdio_client, StdioServerP
 from mcp.client.streamable_http import streamablehttp_client
 
 from . import secrets as mcp_secrets
+from ..utils.osinfo import package_manager_hint
 from .auth import AuthCancelled, AuthNeeded, FLOW_TTL, build_provider, coordinator as auth_coordinator, forget_login
 
 logger = logging.getLogger("jarvis.mcp")
@@ -70,7 +71,7 @@ def _open_stdio_errlog(server_name: str) -> TextIO:
         log_dir.mkdir(parents=True, exist_ok=True)
         safe = re.sub(r"[^\w.-]+", "_", server_name) or "server"
         return open(log_dir / f"{safe}.log", "a", encoding="utf-8")
-    return open(os.devnull, "w")
+    return open(os.devnull, "w", encoding="utf-8")
 
 
 def _stdio_env(config: dict[str, Any]) -> dict[str, str]:
@@ -122,6 +123,33 @@ def _preflight_hints(name: str, config: dict[str, Any]) -> list[str]:
     if not hints and transport in ("sse", "http") and not config.get("url"):
         hints.append("missing url for remote server")
     return hints
+
+
+# Launchers MCP configs commonly use → the package that provides them.
+_LAUNCHER_PACKAGES = {
+    "npx": ("Node.js", "node", "OpenJS.NodeJS.LTS"),
+    "node": ("Node.js", "node", "OpenJS.NodeJS.LTS"),
+    "uvx": ("uv", "uv", "astral-sh.uv"),
+    "uv": ("uv", "uv", "astral-sh.uv"),
+    "docker": ("Docker", "--cask docker", "Docker.DockerDesktop"),
+}
+
+
+def _missing_command_error(config: dict[str, Any]) -> str | None:
+    """A readable error when a stdio server's command isn't installed.
+
+    Spawning it anyway only yields ``FileNotFoundError: [WinError 2]`` /
+    ``[Errno 2]``, which doesn't say what to install.
+    """
+    cmd = str(mcp_secrets.expand(config.get("command", ""))).strip()
+    if not cmd or shutil.which(cmd) is not None:
+        return None
+    name = pathlib.Path(cmd).stem.lower()
+    if name in _LAUNCHER_PACKAGES:
+        label, brew, winget = _LAUNCHER_PACKAGES[name]
+        how = package_manager_hint(name, brew=brew, winget=winget)
+        return f"command not found: {cmd} — install {label} ({how}), then open a new terminal"
+    return f"command not found: {cmd} — install it or put it on PATH"
 
 
 # ── server state ─────────────────────────────────────────────────────────
@@ -915,7 +943,7 @@ class MCPRegistry:
             transport_type = config.get("type", "stdio")
 
             if transport_type == "stdio":
-                error = loop.run_coro(
+                error = _missing_command_error(config) or loop.run_coro(
                     self._connect_and_init_stdio(server_name, state, config),
                     timeout=30,
                 )

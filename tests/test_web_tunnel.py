@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import email.message
-import stat
 import time
 
 import pytest
@@ -57,16 +56,14 @@ def test_provider_choice_prefers_setting_then_whatever_is_installed(monkeypatch)
 # ─── The tunnel process ─────────────────────────────────────────────────
 
 @pytest.fixture
-def fake_cloudflared(tmp_path, monkeypatch):
-    script = tmp_path / "cloudflared"
-    script.write_text(
-        "#!/bin/sh\n"
-        "echo 'INF Requesting new quick Tunnel on trycloudflare.com...'\n"
-        "echo 'INF |  https://fake-quick-tunnel.trycloudflare.com  |'\n"
-        "exec sleep 30\n"
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setattr(tun, "binary_for", lambda p: str(script) if p == "cloudflare" else None)
+def fake_cloudflared(fake_program, monkeypatch):
+    script = fake_program("cloudflared", """
+        import time
+        print("INF Requesting new quick Tunnel on trycloudflare.com...", flush=True)
+        print("INF |  https://fake-quick-tunnel.trycloudflare.com  |", flush=True)
+        time.sleep(30)
+    """)
+    monkeypatch.setattr(tun, "binary_for", lambda p: script if p == "cloudflare" else None)
     monkeypatch.setattr(tun, "_doh_resolves", lambda host: True)
     return script
 
@@ -93,11 +90,13 @@ def test_tunnel_goes_live_and_stop_kills_the_process(fake_cloudflared):
     assert _wait(lambda: proc.poll() is not None)
 
 
-def test_tunnel_that_exits_early_reports_why(tmp_path, monkeypatch):
-    script = tmp_path / "cloudflared"
-    script.write_text("#!/bin/sh\necho 'ERR failed to request quick Tunnel: dial tcp: no route'\nexit 1\n")
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setattr(tun, "binary_for", lambda p: str(script))
+def test_tunnel_that_exits_early_reports_why(fake_program, monkeypatch):
+    script = fake_program("cloudflared", """
+        import sys
+        print("ERR failed to request quick Tunnel: dial tcp: no route", flush=True)
+        sys.exit(1)
+    """)
+    monkeypatch.setattr(tun, "binary_for", lambda p: script)
     t = tun.Tunnel(provider="cloudflare", port=8765)
     t.start()
     assert _wait(lambda: t.status == "error")

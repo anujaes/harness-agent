@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import sys
 import urllib.request
 
 import pytest
@@ -156,21 +157,17 @@ def test_web_stop_frees_the_port_and_unwraps_the_console(web_app):
     asyncio.run(run())
 
 
-def test_web_anywhere_opens_a_public_link_with_the_token(web_app, tmp_path, monkeypatch):
-    import stat
-
+def test_web_anywhere_opens_a_public_link_with_the_token(web_app, fake_program, monkeypatch):
     import jarvis.web.tunnel as tun
     from jarvis.tui.web_modal import WebConnectScreen
 
-    script = tmp_path / "cloudflared"
-    script.write_text(
-        "#!/bin/sh\n"
-        "sleep 0.3\n"
-        "echo 'INF |  https://test-anywhere.trycloudflare.com  |'\n"
-        "exec sleep 30\n"
-    )
-    script.chmod(script.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setattr(tun, "binary_for", lambda p: str(script) if p == "cloudflare" else None)
+    script = fake_program("cloudflared", """
+        import time
+        time.sleep(1.0)  # long enough to see the dialog in its "starting" state
+        print("INF |  https://test-anywhere.trycloudflare.com  |", flush=True)
+        time.sleep(30)
+    """)
+    monkeypatch.setattr(tun, "binary_for", lambda p: script if p == "cloudflare" else None)
     monkeypatch.setattr(tun, "_doh_resolves", lambda host: True)
 
     async def run() -> None:
@@ -231,7 +228,9 @@ def test_anywhere_without_a_tunnel_app_explains_how_to_get_one(web_app, monkeypa
             assert isinstance(screen, WebConnectScreen)
             assert screen._anywhere_state() == "missing"
             text = str(screen.query_one("#web_qr").render())
-            assert "brew install cloudflared" in text
+            assert tun.INSTALL_HINTS["cloudflare"] in text
+            assert ("winget install Cloudflare.cloudflared" if sys.platform == "win32"
+                    else "brew install cloudflared") in text
             app._stop_web_remote()
             await pilot.pause(0.6)
 

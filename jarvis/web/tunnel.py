@@ -25,21 +25,59 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from ..utils.osinfo import CREATE_NEW_PROCESS_GROUP, IS_WINDOWS, hidden_subprocess_kwargs
+
 PROVIDERS = ("cloudflare", "ngrok")
 _BINARIES = {"cloudflare": "cloudflared", "ngrok": "ngrok"}
-INSTALL_HINTS = {
-    "cloudflare": "brew install cloudflared",
-    "ngrok": "brew install ngrok && ngrok config add-authtoken <token>",
-}
+if IS_WINDOWS:
+    # PowerShell 5.1 has no `&&`, so the ngrok hint spells out the two steps.
+    INSTALL_HINTS = {
+        "cloudflare": "winget install Cloudflare.cloudflared",
+        "ngrok": "winget install ngrok.ngrok, then ngrok config add-authtoken <token>",
+    }
+else:
+    INSTALL_HINTS = {
+        "cloudflare": "brew install cloudflared",
+        "ngrok": "brew install ngrok && ngrok config add-authtoken <token>",
+    }
 START_TIMEOUT = 40.0
 
 _CLOUDFLARE_URL = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com")
 _NGROK_URL = re.compile(r"https://[a-zA-Z0-9.-]+\.ngrok(?:-free)?\.(?:app|dev|io)")
 
 
+def _windows_install_dirs(provider: str) -> list[str]:
+    """Places installers put the tunnel apps that may not be on PATH yet.
+
+    winget links portable apps into ``WinGet\\Links`` but only terminals opened
+    afterwards see the new PATH; the MSI / zip installs use Program Files or a
+    folder under the user profile.
+    """
+    local = os.environ.get("LOCALAPPDATA", "")
+    roots = [os.environ.get(k, "") for k in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432")]
+    dirs = [os.path.join(local, "Microsoft", "WinGet", "Links")] if local else []
+    folder = "cloudflared" if provider == "cloudflare" else "ngrok"
+    dirs += [os.path.join(r, folder) for r in roots if r]
+    if local:
+        dirs.append(os.path.join(local, folder))
+        dirs.append(os.path.join(local, "Programs", folder))
+    if provider == "ngrok":
+        dirs.append(os.path.join(os.path.expanduser("~"), "ngrok"))
+    return dirs
+
+
 def binary_for(provider: str) -> str | None:
     name = _BINARIES.get(provider)
-    return shutil.which(name) if name else None
+    if not name:
+        return None
+    found = shutil.which(name)
+    if found or not IS_WINDOWS:
+        return found
+    for folder in _windows_install_dirs(provider):
+        cand = os.path.join(folder, f"{name}.exe")
+        if os.path.isfile(cand):
+            return cand
+    return None
 
 
 def available_providers() -> list[str]:
@@ -120,6 +158,18 @@ def _doh_resolves(host: str) -> bool:
         return False
 
 
+def _kill_tree(pid: int) -> None:
+    """Windows: end ``pid`` and its children (a wrapper script's tunnel app too)."""
+    try:
+        subprocess.run(
+            ["taskkill", "/T", "/F", "/PID", str(pid)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5, check=False, **hidden_subprocess_kwargs(),
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def public_link(public_url: str, token: str) -> str:
     return f"{public_url.rstrip('/')}/?token={token}"
 
@@ -138,6 +188,12 @@ class Tunnel:
     _stopped: bool = field(default=False, repr=False)
 
     def start(self) -> None:
+        if IS_WINDOWS:
+            # No console of its own (no window flashing up, no Ctrl+C from ours).
+            detach = {"creationflags": hidden_subprocess_kwargs().get("creationflags", 0)
+                      | CREATE_NEW_PROCESS_GROUP}
+        else:
+            detach = {"start_new_session": True}
         try:
             self._proc = subprocess.Popen(
                 command_for(self.provider, self.port),
@@ -145,9 +201,11 @@ class Tunnel:
                 stderr=subprocess.STDOUT,
                 stdin=subprocess.DEVNULL,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 bufsize=1,
-                start_new_session=True,
                 env=dict(os.environ),
+                **detach,
             )
         except OSError as exc:
             self._fail(f"could not start {_BINARIES[self.provider]}: {exc}")
@@ -233,6 +291,8 @@ class Tunnel:
         proc = self._proc
         if proc is not None and proc.poll() is None:
             try:
+                if IS_WINDOWS:
+                    _kill_tree(proc.pid)
                 proc.terminate()
                 proc.wait(timeout=3)
             except Exception:

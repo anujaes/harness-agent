@@ -197,26 +197,37 @@ class WebRemoteMixin:
             self._tui_console.print(f"[{ui.FG_DIM}]🌍 anywhere link closed · local network only[/]")
 
     def _install_cloudflared(self) -> None:
-        """One-key install from the /web dialog (Homebrew)."""
+        """One-key install from the /web dialog (Homebrew on macOS, winget on Windows)."""
         import shutil
         import subprocess
 
-        brew = shutil.which("brew")
-        if not brew:
-            self.notify("Install cloudflared from developers.cloudflare.com (Homebrew not found)",
+        from ...utils.osinfo import IS_WINDOWS, hidden_subprocess_kwargs
+
+        if IS_WINDOWS:
+            tool, label = shutil.which("winget"), "winget"
+            cmd = [tool or "winget", "install", "-e", "--id", "Cloudflare.cloudflared", "--silent",
+                   "--accept-source-agreements", "--accept-package-agreements"]
+        else:
+            tool, label = shutil.which("brew"), "Homebrew"
+            cmd = [tool or "brew", "install", "cloudflared"]
+        if not tool:
+            self.notify(f"Install cloudflared from developers.cloudflare.com ({label} not found)",
                         severity="warning", timeout=5)
             return
-        self.notify("Installing cloudflared with Homebrew…", timeout=4)
+        self.notify(f"Installing cloudflared with {label}…", timeout=4)
+        failed = f"{'winget' if IS_WINDOWS else 'brew'} install cloudflared failed"
 
         def run() -> None:
             try:
-                r = subprocess.run([brew, "install", "cloudflared"], capture_output=True, text=True, timeout=600)
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                   stdin=subprocess.DEVNULL, timeout=600, **hidden_subprocess_kwargs())
                 ok = r.returncode == 0
+                out = (r.stderr or r.stdout or "").strip().splitlines()
                 msg = "cloudflared installed — press a to go Anywhere" if ok else (
-                    "brew install cloudflared failed: " + (r.stderr or r.stdout).strip().splitlines()[-1][:120]
+                    f"{failed}: " + (out[-1][:120] if out else f"exit {r.returncode}")
                 )
             except Exception as exc:
-                ok, msg = False, f"brew install cloudflared failed: {exc}"
+                ok, msg = False, f"{failed}: {exc}"
             self._on_ui_thread(
                 lambda: self.notify(msg, severity="information" if ok else "error", timeout=5)
             )
