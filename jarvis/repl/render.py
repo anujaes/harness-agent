@@ -108,6 +108,7 @@ _SERIAL_TOOLS = {
     "click_at", "click_element", "click_menu", "key_press", "type_text",
     "launch_app", "focus_app", "quit_app", "applescript", "shortcut_run",
     "clipboard_set", "mac_control", "speck",
+    "powershell", "task_run", "system_control",
     # context — builds/shared state
     "resolve_context", "read_bundle",
     "ask_user_question",

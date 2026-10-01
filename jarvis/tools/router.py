@@ -8,6 +8,7 @@ from typing import Iterable
 from . import TOOL_GROUPS, TOOL_NAME_TO_GROUP, FUNC
 from .plan import PLAN_MODE_ALLOWED
 from ..storage.skills import skill_count
+from ..utils.osinfo import IS_WINDOWS
 from ..utils.schema import sanitize_tools
 from .. import state
 
@@ -15,8 +16,23 @@ WEB_RE = re.compile(
     r"\b(web|internet|search online|look up|latest|today|news|price|weather|url|https?://|docs?|documentation)\b",
     re.I,
 )
-MAC_RE = re.compile(
-    r"\b(click|type|press|open app|launch|focus|safari|finder|whatsapp|messages|mail|calendar|reminders|clipboard|screen|ui|macos|speak|speck|read aloud|text to speech|tts|aloud|voice|sound|notify)\b",
+_DESKTOP_WORDS = (
+    r"click|type|press|open app|launch|focus|safari|finder|whatsapp|messages|mail|calendar|reminders|clipboard|"
+    r"screen|ui|macos|speak|speck|read aloud|text to speech|tts|aloud|voice|sound|notify"
+)
+# Windows apps and the system_control / task_run vocabulary (Windows only, so
+# coding turns elsewhere don't pick up desktop tools for "volume" or "battery").
+_WINDOWS_DESKTOP_WORDS = (
+    r"file explorer|notepad|outlook|excel|microsoft word|teams|taskbar|start menu|powershell|"
+    r"volume|mute|wi-?fi|battery|brightness|dark mode|light mode|lock (?:the )?(?:screen|pc|computer)|"
+    r"scheduled task|task scheduler|frontmost|front app|which app"
+)
+# A desktop tool asked for by name ("use frontmost_app"). Only compound names —
+# plain words like "wait" or "notify" are too common in coding requests.
+_DESKTOP_TOOL_NAMES = "|".join(re.escape(t["name"]) for t in TOOL_GROUPS["desktop"] if "_" in t["name"])
+DESKTOP_RE = re.compile(
+    rf"\b({_DESKTOP_WORDS}{'|' + _WINDOWS_DESKTOP_WORDS if IS_WINDOWS else ''})\b"
+    rf"|\b(?:{_DESKTOP_TOOL_NAMES})\b",
     re.I,
 )
 OCR_RE = re.compile(
@@ -165,11 +181,11 @@ def select_tools(messages: list[dict]) -> list[dict]:
 
     if WEB_RE.search(text) or "internet" in active:
         groups.append("internet")
-    mac = bool(MAC_RE.search(text) or "mac" in active)
-    if mac:
-        groups.append("mac")
-    # Eyes: whenever the task is visual, or the agent is driving the Mac GUI.
-    if mac or VISION_RE.search(text) or "vision" in active:
+    desktop = bool(DESKTOP_RE.search(text) or "desktop" in active)
+    if desktop:
+        groups.append("desktop")
+    # Eyes: whenever the task is visual, or the agent is driving the desktop GUI.
+    if desktop or VISION_RE.search(text) or "vision" in active:
         groups.append("vision")
     # /loop pacing — only while a loop exists.
     from ..loop import active as _loop_active

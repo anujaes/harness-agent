@@ -14,6 +14,7 @@ TOOL_ICONS = {
     "clipboard_get": "☐", "clipboard_set": "☑",
     "open_url": "⌗", "notify": "⚐", "speck": "♪",
     "shortcut_run": "⚙", "mac_control": "⚙",
+    "powershell": "⌘", "task_run": "⚙", "system_control": "⚙",
     "web_search": "◎", "fetch_url": "⌗", "verified_search": "✦",
     "memory_save": "◆", "memory_list": "◆", "memory_delete": "✕",
     "read_image_text": "▣", "read_images_text": "▣",

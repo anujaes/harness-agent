@@ -72,6 +72,9 @@ _TITLES = {
     "speck": "Speak",
     "shortcut_run": "Shortcut",
     "mac_control": "Mac",
+    "powershell": "PowerShell",
+    "task_run": "Task",
+    "system_control": "System",
     "wait": "Wait",
     "check_permissions": "Permissions",
     "skill_load": "Skill",
@@ -111,6 +114,7 @@ _ICONS = {
     "clipboard_get": "⎘", "clipboard_set": "⎘",
     "notify": "!", "speck": "♪", "wait": "◷",
     "shortcut_run": "▶", "mac_control": "◐",
+    "powershell": "⌘", "task_run": "▶", "system_control": "◐",
     "skill_load": "✧", "skill_install": "✧", "skill_remove": "✧",
     "mcp_add": "◈", "mcp_list": "◈", "mcp_connect": "◈", "mcp_remove": "◈",
 }
@@ -321,7 +325,7 @@ def tool_args(name: str, raw_input: Any, width: int = 96) -> str:
         return c(" ".join(x for x in (str(d.get("name") or ""), str(d.get("action") or "")) if x))
     if name in ("launch_app", "focus_app", "quit_app"):
         return c(d.get("name") or "")
-    if name == "applescript":
+    if name in ("applescript", "powershell"):
         return c(d.get("code") or "")
     if name == "type_text":
         return c(d.get("text") or "")

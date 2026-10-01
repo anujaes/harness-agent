@@ -3,7 +3,13 @@ from rich.markup import escape
 
 from ..console import console, Panel, Markdown
 from ..constants import NOTES_FILE, PANEL_PREVIEW_CHARS, PIN_FILE
-from ..tools.mac.clipboard import clipboard_get
+from ..tui.keys import key_label
+from ..utils.osinfo import IS_WINDOWS
+
+if IS_WINDOWS:
+    from ..tools.windows.clipboard import clipboard_get
+else:
+    from ..tools.mac.clipboard import clipboard_get
 from ..tools.image_input import append_image_block, clipboard_image_to_file, file_digest, ocr_image_block
 from ..storage.prefs import save_aliases
 from ..storage import pin as pin_store
@@ -83,7 +89,7 @@ def _handle_copy(arg: str) -> None:
     sub = (arg or "").strip().lower()
     if sub in ("help", "?"):
         console.print(
-            "[cyan]/copy[/]       copy last reply  [dim](also ⌃Y)[/]\n"
+            f"[cyan]/copy[/]       copy last reply  [dim](also {key_label('⌃Y')})[/]\n"
             "[cyan]/copy code[/]  copy last code block from the reply\n"
             "[cyan]/copy all[/]   copy the whole conversation as markdown"
         )

@@ -384,7 +384,7 @@ function toolKindIcon(name) {
   if (n === 'ask_user_question') return 'message-circle-question';
   if (n === 'exit_plan_mode') return 'map';
   if (n === 'schedule_wakeup') return 'timer';
-  if (/^(launch_app|focus_app|quit_app|list_apps|frontmost_app|applescript|read_ui|click_|type_text|key_press|mac_control|shortcut_run)/.test(n)) return 'app-window';
+  if (/^(launch_app|focus_app|quit_app|list_apps|frontmost_app|applescript|read_ui|click_|type_text|key_press|mac_control|shortcut_run|powershell|task_run|system_control)/.test(n)) return 'app-window';
   return 'wrench';
 }
 

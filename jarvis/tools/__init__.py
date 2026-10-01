@@ -6,13 +6,36 @@ from .shell import run_bash
 from .search import search_code
 from .git import git_status, git_diff, git_log
 from .context import resolve_context, read_bundle
-from .mac import (
-    applescript, launch_app, focus_app, quit_app, list_apps, frontmost_app,
-    read_ui, click_element, wait, check_permissions,
-    type_text, key_press, click_menu, click_at,
-    clipboard_get, clipboard_set,
-    open_url, notify, speck, shortcut_run, mac_control,
-)
+from ..utils.osinfo import IS_WINDOWS
+
+# Desktop control: the same tool surface backed by UI Automation on Windows
+# and by AppleScript/JXA elsewhere. Each backend only imports on its own OS.
+if IS_WINDOWS:
+    from .windows import (
+        powershell, launch_app, focus_app, quit_app, list_apps, frontmost_app,
+        read_ui, click_element, wait, check_permissions,
+        type_text, key_press, click_menu, click_at,
+        clipboard_get, clipboard_set,
+        open_url, notify, speck, task_run, system_control,
+    )
+    from .schemas_windows import WINDOWS_TOOLS as DESKTOP_TOOLS
+
+    _PLATFORM_DESKTOP_FUNCS = {
+        "powershell": powershell, "task_run": task_run, "system_control": system_control,
+    }
+else:
+    from .mac import (
+        applescript, launch_app, focus_app, quit_app, list_apps, frontmost_app,
+        read_ui, click_element, wait, check_permissions,
+        type_text, key_press, click_menu, click_at,
+        clipboard_get, clipboard_set,
+        open_url, notify, speck, shortcut_run, mac_control,
+    )
+    from .schemas_mac import MAC_TOOLS as DESKTOP_TOOLS
+
+    _PLATFORM_DESKTOP_FUNCS = {
+        "applescript": applescript, "shortcut_run": shortcut_run, "mac_control": mac_control,
+    }
 from .web import web_search, fetch_url, verified_search
 from .ocr import read_image_text, read_images_text
 from .screenshot import screenshot
@@ -30,12 +53,11 @@ from .schemas_core import (
     CORE_TOOLS, CONTEXT_TOOLS, INTERNET_TOOLS, OCR_TOOLS, VISION_TOOLS, BACKGROUND_TOOLS,
     LOOP_TOOLS,
 )
-from .schemas_mac import MAC_TOOLS
 
 # MCP group starts empty — populated dynamically by the MCP registry
 # when servers connect. Import is deferred to avoid circular imports.
 MCP_TOOLS: list[dict] = []
-TOOLS = (CORE_TOOLS + BACKGROUND_TOOLS + VISION_TOOLS + MAC_TOOLS + INTERNET_TOOLS + MEMORY_TOOLS
+TOOLS = (CORE_TOOLS + BACKGROUND_TOOLS + VISION_TOOLS + DESKTOP_TOOLS + INTERNET_TOOLS + MEMORY_TOOLS
          + LESSON_TOOLS + SKILL_TOOLS + EXTENSION_TOOLS + OCR_TOOLS + LOOP_TOOLS + MCP_TOOLS)
 TOOL_GROUPS: dict[str, list[dict]] = {
     "core": CORE_TOOLS,
@@ -43,7 +65,7 @@ TOOL_GROUPS: dict[str, list[dict]] = {
     "vision": VISION_TOOLS,
     "loop": LOOP_TOOLS,
     "context": CONTEXT_TOOLS,
-    "mac": MAC_TOOLS,
+    "desktop": DESKTOP_TOOLS,
     "internet": INTERNET_TOOLS,
     "memory": MEMORY_TOOLS,
     "lessons": LESSON_TOOLS,
@@ -70,17 +92,17 @@ FUNC = {
     # context (connected context pack — replaces 5-20 reads with 1 call)
     "resolve_context": resolve_context,
     "read_bundle": read_bundle,
-    # mac
+    # desktop (macOS / Windows)
     "launch_app": launch_app, "focus_app": focus_app, "quit_app": quit_app,
     "list_apps": list_apps, "frontmost_app": frontmost_app,
-    "applescript": applescript, "read_ui": read_ui,
+    "read_ui": read_ui,
     "click_element": click_element, "wait": wait,
     "check_permissions": check_permissions,
     "type_text": type_text, "key_press": key_press,
     "click_menu": click_menu, "click_at": click_at,
     "clipboard_get": clipboard_get, "clipboard_set": clipboard_set,
     "open_url": open_url, "notify": notify, "speck": speck,
-    "shortcut_run": shortcut_run, "mac_control": mac_control,
+    **_PLATFORM_DESKTOP_FUNCS,
     # internet
     "web_search": web_search, "fetch_url": fetch_url,
     "verified_search": verified_search,

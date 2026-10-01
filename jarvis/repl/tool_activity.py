@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from ..utils.osinfo import IS_WINDOWS
+
 
 def _clip(s: str, max_len: int = 72) -> str:
     if not s:
@@ -153,6 +155,8 @@ def describe_tool_activity(name: str, raw_input) -> str:
         return "Reading frontmost app"
     if name == "applescript":
         return f"AppleScript: {c(d.get('code', ''))}"
+    if name == "powershell":
+        return f"PowerShell: {c(d.get('code', ''))}"
     if name == "read_ui":
         app = d.get("app") or "frontmost"
         return f"Reading UI tree: {c(str(app))}"
@@ -161,7 +165,7 @@ def describe_tool_activity(name: str, raw_input) -> str:
     if name == "wait":
         return f"Waiting {d.get('seconds', 0)}s"
     if name == "check_permissions":
-        return "Checking Accessibility permission"
+        return "Checking desktop-control access" if IS_WINDOWS else "Checking Accessibility permission"
     if name == "type_text":
         return f"Typing: {c(d.get('text', ''))}"
     if name == "key_press":
@@ -196,6 +200,16 @@ def describe_tool_activity(name: str, raw_input) -> str:
         if d.get("input_text"):
             line += f" ({c(str(d.get('input_text')), 40)})"
         return line
+    if name == "task_run":
+        line = f"Task: {c(d.get('name', ''))}"
+        if d.get("input_text"):
+            line += f" ({c(str(d.get('input_text')), 40)})"
+        return line
+    if name == "system_control":
+        act = d.get("action", "")
+        if d.get("value"):
+            return f"System: {c(str(act))} → {c(str(d.get('value')), 24)}"
+        return f"System: {c(str(act))}"
     if name == "mac_control":
         act = d.get("action", "")
         if d.get("value"):
