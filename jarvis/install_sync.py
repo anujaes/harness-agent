@@ -6,10 +6,41 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass
+from typing import Callable
+
+from .utils.osinfo import IS_WINDOWS
 
 
-MANAGED_INSTALL_DIR = pathlib.Path("~/.local/share/harness-agent").expanduser()
+def _managed_install_dir() -> pathlib.Path:
+    """Where the official installer puts its checkout (scripts/install, install.ps1)."""
+    if IS_WINDOWS:
+        custom = os.environ.get("JARVIS_INSTALL_DIR", "").strip()
+        if custom:
+            return pathlib.Path(custom).expanduser()
+        base = os.environ.get("LOCALAPPDATA") or str(pathlib.Path.home() / "AppData" / "Local")
+        return pathlib.Path(base) / "harness-agent"
+    return pathlib.Path("~/.local/share/harness-agent").expanduser()
+
+
+MANAGED_INSTALL_DIR = _managed_install_dir()
+
+_INSTALLER_BASE = "https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts"
+
+
+def install_command() -> str:
+    """One-line (re)install / update command for this OS."""
+    if IS_WINDOWS:
+        return f'powershell -ExecutionPolicy ByPass -c "irm {_INSTALLER_BASE}/install.ps1 | iex"'
+    return f"curl -fsSL {_INSTALLER_BASE}/install | bash"
+
+
+def manual_pip_command(repo_root: pathlib.Path) -> str:
+    """Shell line that reinstalls the checkout into the running venv."""
+    if IS_WINDOWS:  # PowerShell 5.1 has no `&&`
+        return f'cd "{repo_root}"; & "{sys.executable}" -m pip install -e .'
+    return f"cd {repo_root} && {sys.executable} -m pip install -e ."
 
 
 def find_install_root() -> pathlib.Path | None:
@@ -23,6 +54,8 @@ def find_install_root() -> pathlib.Path | None:
             candidates.append(parent)
 
     # Standard install: `jarvis` symlink → ~/.local/share/harness-agent/.venv/bin/jarvis
+    # (Windows: a .cmd shim, which never resolves to the repo — but the install
+    # is editable, so the __file__ walk above already found it.)
     try:
         jarvis_bin = shutil.which("jarvis")
         if jarvis_bin:
@@ -161,8 +194,47 @@ def running_python() -> str:
     return sys.executable
 
 
+_ASIDE_SUFFIX = ".old"
+
+
+def _move_aside_locked_launchers() -> list[tuple[pathlib.Path, pathlib.Path]]:
+    """Windows: rename the venv's ``jarvis*.exe`` launchers out of pip's way.
+
+    A running ``jarvis.exe`` can't be overwritten, so ``pip install -e .`` would
+    fail while Jarvis itself is open — but Windows does allow renaming it. The
+    old copies are deleted on a later run, once nothing has them open.
+    """
+    scripts = pathlib.Path(running_python()).parent
+    for stale in scripts.glob(f"jarvis*.exe.*{_ASIDE_SUFFIX}"):
+        try:
+            stale.unlink()
+        except OSError:
+            pass  # still running
+    moved: list[tuple[pathlib.Path, pathlib.Path]] = []
+    for exe in scripts.glob("jarvis*.exe"):
+        aside = exe.with_name(f"{exe.name}.{os.getpid()}{_ASIDE_SUFFIX}")
+        try:
+            exe.rename(aside)
+        except OSError:
+            continue
+        moved.append((exe, aside))
+    return moved
+
+
+def _restore_launchers(moved: list[tuple[pathlib.Path, pathlib.Path]]) -> None:
+    """Put launchers back when pip failed before writing new ones."""
+    for exe, aside in moved:
+        if not exe.exists():
+            try:
+                aside.rename(exe)
+            except OSError:
+                pass
+
+
 def pip_install_repo(repo_root: pathlib.Path, *, timeout: int = 180) -> bool:
     """Editable install into the *running* venv so git pull = live code after restart."""
+    moved = _move_aside_locked_launchers() if IS_WINDOWS else []
+    ok = False
     try:
         r = subprocess.run(
             [running_python(), "-m", "pip", "install", "-e", "."],
@@ -171,9 +243,13 @@ def pip_install_repo(repo_root: pathlib.Path, *, timeout: int = 180) -> bool:
             text=True,
             timeout=timeout,
         )
-        return r.returncode == 0
+        ok = r.returncode == 0
     except Exception:
-        return False
+        ok = False
+    finally:
+        if moved:
+            _restore_launchers(moved)
+    return ok
 
 
 def harness_agent_models_available() -> bool:
@@ -185,10 +261,53 @@ def harness_agent_models_available() -> bool:
         return False
 
 
+# Windows restart plumbing. ``os.execv`` there spawns a new process and exits
+# the old one, so the shell takes the console back while the new Jarvis runs.
+# Instead the new process runs as a child and this one waits for it; when the
+# request comes from a worker thread while a UI owns the console, the UI is
+# asked to close first and its main thread finishes the restart.
+_restart_handler: Callable[[], None] | None = None
+_restart_pending = False
+
+
+def set_restart_handler(handler: Callable[[], None] | None) -> None:
+    """Register how to close the running UI (thread-safe) before a restart."""
+    global _restart_handler
+    _restart_handler = handler
+
+
+def _restart_in_child() -> None:
+    try:
+        rc = subprocess.run([sys.executable, *sys.argv], check=False).returncode
+    except KeyboardInterrupt:
+        rc = 130
+    raise SystemExit(rc)
+
+
+def finish_pending_restart() -> None:
+    """Main thread, after the UI closed: run the restart it was asked for."""
+    global _restart_pending
+    if _restart_pending:
+        _restart_pending = False
+        _restart_in_child()
+
+
 def reexec_jarvis(*, update_banner: dict | None = None) -> None:
     """Replace this process so Python reloads modules from disk."""
+    global _restart_pending
     if update_banner:
         import json
         os.environ["HARNESS_UPDATE_RESULT"] = json.dumps(update_banner)
     os.environ["HARNESS_UPDATED_REEXEC"] = "1"
-    os.execv(sys.executable, [sys.executable, *sys.argv])
+    if not IS_WINDOWS:
+        os.execv(sys.executable, [sys.executable, *sys.argv])
+    if threading.current_thread() is threading.main_thread():
+        _restart_in_child()
+    if _restart_handler is None:
+        # A UI we can't close owns the console (legacy REPL): the update is on
+        # disk and loads next launch — never run two UIs in one console.
+        os.environ.pop("HARNESS_UPDATED_REEXEC", None)
+        os.environ.pop("HARNESS_UPDATE_RESULT", None)
+        return
+    _restart_pending = True
+    _restart_handler()

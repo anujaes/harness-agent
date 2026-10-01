@@ -132,3 +132,69 @@ def test_sync_repo_to_remote_pulls_clean_tree(monkeypatch, tmp_path):
     assert result.discarded_local == ()
     assert any(args[:3] == ["pull", "--ff-only", "origin"] for args in calls)
 
+def test_managed_install_dir_matches_the_installer(monkeypatch):
+    import jarvis.install_sync as sync
+
+    monkeypatch.setattr(sync, "IS_WINDOWS", True)
+    monkeypatch.delenv("JARVIS_INSTALL_DIR", raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\me\AppData\Local")
+    assert sync._managed_install_dir() == pathlib.Path(r"C:\Users\me\AppData\Local") / "harness-agent"
+    monkeypatch.setenv("JARVIS_INSTALL_DIR", r"D:\tools\jarvis")
+    assert sync._managed_install_dir() == pathlib.Path(r"D:\tools\jarvis")
+    assert "install.ps1 | iex" in sync.install_command()
+
+    monkeypatch.setattr(sync, "IS_WINDOWS", False)
+    assert sync._managed_install_dir() == pathlib.Path("~/.local/share/harness-agent").expanduser()
+    assert sync.install_command().endswith("/scripts/install | bash")
+
+
+def test_pip_install_moves_a_locked_launcher_aside_and_restores_it_on_failure(monkeypatch, tmp_path):
+    import subprocess
+
+    import jarvis.install_sync as sync
+
+    scripts = tmp_path / "Scripts"
+    scripts.mkdir()
+    (scripts / "jarvis.exe").write_bytes(b"old launcher")
+    (scripts / "jarvis.exe.1.old").write_bytes(b"stale")
+    monkeypatch.setattr(sync, "IS_WINDOWS", True)
+    monkeypatch.setattr(sync, "running_python", lambda: str(scripts / "python.exe"))
+    seen = []
+
+    def fake_pip(cmd, **_kw):
+        seen.append(sorted(p.name for p in scripts.iterdir()))
+        return subprocess.CompletedProcess(cmd, 1)
+
+    monkeypatch.setattr(sync.subprocess, "run", fake_pip)
+    assert sync.pip_install_repo(tmp_path) is False
+    # while pip ran the launcher was out of the way; the stale copy is gone
+    assert seen[0] == [f"jarvis.exe.{sync.os.getpid()}.old"]
+    # pip failed without writing a new one: the old launcher is back
+    assert sorted(p.name for p in scripts.iterdir()) == ["jarvis.exe"]
+    assert (scripts / "jarvis.exe").read_bytes() == b"old launcher"
+
+
+def test_windows_restart_from_a_worker_asks_the_ui_to_close_first(monkeypatch):
+    import threading
+
+    import jarvis.install_sync as sync
+
+    monkeypatch.setattr(sync, "IS_WINDOWS", True)
+    monkeypatch.setattr(sync, "_restart_pending", False)
+    monkeypatch.delenv("HARNESS_UPDATED_REEXEC", raising=False)
+    closed, children = [], []
+    monkeypatch.setattr(sync, "_restart_in_child", lambda: children.append(1))
+    monkeypatch.setattr(sync.os, "execv", lambda *a: (_ for _ in ()).throw(AssertionError("execv on Windows")))
+    sync.set_restart_handler(lambda: closed.append(1))
+    try:
+        worker = threading.Thread(target=sync.reexec_jarvis)
+        worker.start()
+        worker.join()
+        assert closed == [1] and children == []  # the UI closes; nothing spawned yet
+        sync.finish_pending_restart()  # main thread, after the UI is gone
+        assert children == [1]
+        sync.finish_pending_restart()
+        assert children == [1]  # only once
+    finally:
+        sync.set_restart_handler(None)
+        monkeypatch.delenv("HARNESS_UPDATED_REEXEC", raising=False)

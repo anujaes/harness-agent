@@ -109,6 +109,7 @@ def run_update_cli(argv: list[str]) -> int:
     """
     check_only = any(a in ("--check", "-n", "--dry-run") for a in argv)
 
+    from .install_sync import install_command
     from .updater import force_update
 
     print("jarvis: checking for updates…", file=sys.stderr)
@@ -119,7 +120,8 @@ def run_update_cli(argv: list[str]) -> int:
     if status == "no_repo":
         print(
             "jarvis: cannot self-update — this install is not a git checkout.\n"
-            "        Reinstall with the official installer to enable updates.",
+            "        Reinstall with the official installer to enable updates:\n"
+            f"        {install_command()}",
             file=sys.stderr,
         )
         return 1
@@ -172,6 +174,23 @@ def run_update_cli(argv: list[str]) -> int:
     return 1
 
 
+def _utf8_stdio() -> None:
+    """Windows: write UTF-8 when output is piped or redirected.
+
+    The console itself already takes Unicode, but a pipe / file gets the ANSI
+    code page (cp1252), where ``→`` and friends raise ``UnicodeEncodeError``.
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        enc = (getattr(stream, "encoding", "") or "").lower().replace("-", "")
+        if enc != "utf8" and hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def main() -> None:
     """Start Jarvis.
 
@@ -179,6 +198,7 @@ def main() -> None:
     Pass ``-p`` to run one task without opening the TUI.
     Pass ``--legacy`` to use the older rich REPL.
     """
+    _utf8_stdio()
     _handle_post_reexec_banner()
 
     argv = sys.argv[1:]

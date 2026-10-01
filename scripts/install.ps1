@@ -135,7 +135,30 @@ for name in ("jarvis.tui.app", "jarvis.main"):
     }
 
     & $VenvPy -m pip install --upgrade pip setuptools wheel; Assert-Exit 'upgrading pip'
-    & $VenvPy -m pip install -e $InstallDir;                 Assert-Exit 'pip install'
+
+    # A running jarvis.exe can't be overwritten, so updating while Jarvis is
+    # open would fail in pip. Windows does allow renaming it, though: move the
+    # launchers aside (older moved-aside copies are deleted once nothing runs them).
+    $Scripts = Join-Path $VenvDir 'Scripts'
+    Get-ChildItem -Path $Scripts -Filter 'jarvis*.exe.*.old' -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $movedAside = @()
+    foreach ($exe in @(Get-ChildItem -Path $Scripts -Filter 'jarvis*.exe' -ErrorAction SilentlyContinue)) {
+        $aside = "$($exe.FullName).$PID.old"
+        try {
+            Rename-Item -LiteralPath $exe.FullName -NewName (Split-Path $aside -Leaf) -ErrorAction Stop
+            $movedAside += , @($exe.FullName, $aside)
+        } catch { }
+    }
+    & $VenvPy -m pip install -e $InstallDir
+    $pipExit = $LASTEXITCODE
+    foreach ($pair in $movedAside) {
+        # pip failed before writing a new launcher: put the old one back.
+        if (-not (Test-Path -LiteralPath $pair[0])) {
+            Rename-Item -LiteralPath $pair[1] -NewName (Split-Path $pair[0] -Leaf) -ErrorAction SilentlyContinue
+        }
+    }
+    $global:LASTEXITCODE = $pipExit; Assert-Exit 'pip install'
 
     Write-Host 'verifying Python packages...'
     if (-not (Test-Install)) {

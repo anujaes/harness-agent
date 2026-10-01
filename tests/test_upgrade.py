@@ -7,10 +7,11 @@ from unittest import mock
 from jarvis.install_sync import SyncResult
 
 
-def test_cmd_upgrade_succeeds_after_managed_reset(monkeypatch):
+def test_cmd_upgrade_succeeds_after_managed_reset(monkeypatch, tmp_path):
     from jarvis.commands import upgrade as upgrade_mod
 
-    root = upgrade_mod.pathlib.Path("/Users/prajwal/.local/share/harness-agent")
+    root = tmp_path / "harness-agent"
+    (root / ".git").mkdir(parents=True)  # a managed install is a git checkout
     printed: list[str] = []
 
     monkeypatch.setattr(upgrade_mod, "find_install_root", lambda: root)

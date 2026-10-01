@@ -6,16 +6,26 @@ Detects the install directory by:
 """
 import pathlib
 import subprocess
-import sys
+
+from rich.markup import escape
 
 from ..console import console
 from ..constants import VERSION
 from ..repl.turn_progress import report_turn_phase
 from ..install_sync import (
+    MANAGED_INSTALL_DIR,
     find_install_root,
+    install_command,
+    manual_pip_command,
     pip_install_repo,
     reexec_jarvis,
     sync_repo_to_remote,
+)
+from ..utils.osinfo import IS_WINDOWS
+
+_DEV_CLONE_UPDATE = (
+    r"cd C:\path\to\harness; git pull; pip install -e ." if IS_WINDOWS
+    else "cd /path/to/harness && git pull && pip install -e ."
 )
 
 
@@ -73,11 +83,11 @@ def cmd_upgrade(arg: str) -> bool:
             "[red]Could not find Jarvis repository root.[/]\n\n"
             "To manually upgrade:\n\n"
             "  [dim]# If installed via the installer:[/]\n"
-            f"  [cyan]{pathlib.Path('~/.local/share/harness-agent').expanduser()}[/] not found.\n\n"
+            f"  [cyan]{escape(str(MANAGED_INSTALL_DIR))}[/] not found.\n\n"
             "  [dim]# Try running the install script again:[/]\n"
-            "  [cyan]curl -fsSL https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install | bash[/]\n\n"
+            f"  [cyan]{escape(install_command())}[/]\n\n"
             "  [dim]# If in a dev clone:[/]\n"
-            "  cd /path/to/harness && git pull && pip install -e .\n"
+            f"  {_DEV_CLONE_UPDATE}\n"
         )
         return True
 
@@ -166,7 +176,7 @@ def cmd_upgrade(arg: str) -> bool:
         console.print("[red]✗ pip install -e . failed.[/]")
         console.print(
             "[dim]Try manually:[/] "
-            f"[cyan]cd {repo_root} && {sys.executable} -m pip install -e .[/]"
+            f"[cyan]{escape(manual_pip_command(repo_root))}[/]"
         )
         return True
 
@@ -176,7 +186,7 @@ def cmd_upgrade(arg: str) -> bool:
         new_version_file = repo_root / "jarvis" / "constants" / "models.py"
         new_ver = "?"
         if new_version_file.is_file():
-            for line in new_version_file.read_text().split("\n"):
+            for line in new_version_file.read_text(encoding="utf-8").split("\n"):
                 if line.startswith("VERSION"):
                     new_ver = line.split("=")[-1].strip().strip('"').strip("'")
                     break
