@@ -48,3 +48,4 @@ include = ["harness*", "jarvis*"]
 
 [tool.setuptools.package-data]
 "jarvis.web" = ["ui.html", "static/**/*"]
+"jarvis.constants" = ["default_agents/*.md"]

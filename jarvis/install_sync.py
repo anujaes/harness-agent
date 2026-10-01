@@ -26,13 +26,16 @@ def _managed_install_dir() -> pathlib.Path:
 
 MANAGED_INSTALL_DIR = _managed_install_dir()
 
+# macOS/Linux install from upstream main; the Windows edition lives on the
+# windows-support branch of the fork (it is not merged into main).
 _INSTALLER_BASE = "https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts"
+_WINDOWS_INSTALLER_BASE = "https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts"
 
 
 def install_command() -> str:
     """One-line (re)install / update command for this OS."""
     if IS_WINDOWS:
-        return f'powershell -ExecutionPolicy ByPass -c "irm {_INSTALLER_BASE}/install.ps1 | iex"'
+        return f'powershell -ExecutionPolicy ByPass -c "irm {_WINDOWS_INSTALLER_BASE}/install.ps1 | iex"'
     return f"curl -fsSL {_INSTALLER_BASE}/install | bash"
 
 

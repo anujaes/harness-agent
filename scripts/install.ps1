@@ -1,16 +1,22 @@
 # Jarvis installer for Windows (PowerShell 5.1+). The Windows twin of scripts/install.
 #
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/install.ps1 | iex"
+#
+# This is the Windows edition, kept on the `windows-support` branch of
+# github.com/anujaes/harness-agent (macOS/Linux: PrajsRamteke/harness-agent main).
 #
 # Rerun it to update. Same knobs as scripts/install:
 #   JARVIS_REPO_URL, JARVIS_BRANCH, JARVIS_INSTALL_DIR, JARVIS_BIN_DIR, PYTHON
+# Windows-only:
+#   JARVIS_YES=1             install missing Python / Git with winget without asking
+#   JARVIS_NO_MODIFY_PATH=1  don't add the bin folder to the user PATH
 
 # Everything runs inside a script block so `irm | iex` doesn't leave variables
 # or functions behind in the caller's session, and a `throw` stops the install
 # without closing the window.
 & {
-    $RepoUrl    = if ($env:JARVIS_REPO_URL)    { $env:JARVIS_REPO_URL }    else { 'https://github.com/PrajsRamteke/harness-agent.git' }
-    $Branch     = if ($env:JARVIS_BRANCH)      { $env:JARVIS_BRANCH }      else { 'main' }
+    $RepoUrl    = if ($env:JARVIS_REPO_URL)    { $env:JARVIS_REPO_URL }    else { 'https://github.com/anujaes/harness-agent.git' }
+    $Branch     = if ($env:JARVIS_BRANCH)      { $env:JARVIS_BRANCH }      else { 'windows-support' }
     $InstallDir = if ($env:JARVIS_INSTALL_DIR) { $env:JARVIS_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'harness-agent' }
     $BinDir     = if ($env:JARVIS_BIN_DIR)     { $env:JARVIS_BIN_DIR }     else { Join-Path $HOME '.local\bin' }
 
@@ -33,6 +39,7 @@
         return $null
     }
 
+    # Returns the interpreter's path, or $null when no Python 3.10+ is found.
     function Find-Python {
         if ($env:PYTHON) {
             $found = Test-Python $env:PYTHON
@@ -46,7 +53,59 @@
             $found = Test-Python $name
             if ($found) { return $found }
         }
+        # python.org / winget per-user installs don't always put python on PATH.
+        $userPythons = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python3*\python.exe') `
+            -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+        foreach ($exe in $userPythons) {
+            $found = Test-Python $exe.FullName
+            if ($found) { return $found }
+        }
+        return $null
+    }
+
+    # Picks up PATH changes made by installers without opening a new terminal.
+    function Update-SessionPath {
+        $machine = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+        $user = [Environment]::GetEnvironmentVariable('Path', 'User')
+        $env:Path = (@($machine, $user, $env:Path) | Where-Object { $_ }) -join ';'
+    }
+
+    # Asks before installing system software. JARVIS_YES=1 answers yes
+    # (unattended installs); a non-interactive session answers no.
+    function Confirm-Step([string]$question) {
+        if ($env:JARVIS_YES -eq '1') { return $true }
+        try {
+            $answer = Read-Host "$question [Y/n]"
+        } catch {
+            return $false
+        }
+        return ($answer -eq '' -or $answer -match '^(y|yes)$')
+    }
+
+    # Installs a missing prerequisite with winget when the user agrees.
+    function Install-Prerequisite([string]$name, [string]$wingetId, [string[]]$extra = @()) {
+        if (-not (Get-Command winget -ErrorAction SilentlyContinue)) { return $false }
+        if (-not (Confirm-Step "$name is not installed. Install it now with winget ($wingetId)?")) { return $false }
+        Write-Host "installing $name..."
+        winget install -e --id $wingetId --accept-source-agreements --accept-package-agreements @extra | Out-Host
+        Update-SessionPath
+        return $true
+    }
+
+    function Get-Python {
+        $found = Find-Python
+        if ($found) { return $found }
+        if (Install-Prerequisite 'Python 3.12' 'Python.Python.3.12' @('--scope', 'user')) {
+            $found = Find-Python
+            if ($found) { return $found }
+        }
         throw "error: Jarvis requires Python 3.10 or newer`n  install one, for example: winget install -e --id Python.Python.3.12`n  then open a new terminal and rerun this installer"
+    }
+
+    function Assert-Git {
+        if (Get-Command git -ErrorAction SilentlyContinue) { return }
+        if ((Install-Prerequisite 'Git' 'Git.Git') -and (Get-Command git -ErrorAction SilentlyContinue)) { return }
+        throw "error: missing required command: git`n  install it, for example: winget install -e --id Git.Git`n  then open a new terminal and rerun this installer"
     }
 
     function Test-Install {
@@ -107,10 +166,8 @@ for name in ("jarvis.tui.app", "jarvis.main"):
         return $true
     }
 
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
-        throw "error: missing required command: git`n  install it, for example: winget install -e --id Git.Git`n  then open a new terminal and rerun this installer"
-    }
-    $Python = Find-Python
+    Assert-Git
+    $Python = Get-Python
     Write-Host "using Python: $Python"
 
     if (Test-Path (Join-Path $InstallDir '.git')) {
@@ -185,7 +242,12 @@ for name in ("jarvis.tui.app", "jarvis.main"):
     Write-Host 'Jarvis installed.'
     Write-Host "Command: $Shim"
 
-    $addedPath = Add-UserPath $BinDir
+    $addedPath = $false
+    if ($env:JARVIS_NO_MODIFY_PATH -eq '1') {
+        Write-Host "Left your PATH unchanged (JARVIS_NO_MODIFY_PATH=1); run $Shim directly or add $BinDir yourself."
+    } else {
+        $addedPath = Add-UserPath $BinDir
+    }
     if (-not (($env:Path -split ';') -contains $BinDir)) {
         $env:Path = "$BinDir;$env:Path"
     }

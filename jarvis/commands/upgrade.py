@@ -111,13 +111,18 @@ def cmd_upgrade(arg: str) -> bool:
         console.print("[dim]Fetching remote info…[/]")
         rc, out, err = _run(["git", "fetch", "origin"], repo_root)
 
+        # Compare with the branch this checkout tracks (e.g. origin/windows-support
+        # for the Windows edition), like the auto-updater does; main as fallback.
+        rc, out, err = _run(["git", "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], repo_root)
+        upstream = out if rc == 0 and out else "origin/main"
+
         rc, out, err = _run(
-            ["git", "rev-list", "--count", "HEAD..origin/main"], repo_root
+            ["git", "rev-list", "--count", f"HEAD..{upstream}"], repo_root
         )
         behind = int(out) if out and out.isdigit() else 0
 
-        rc, out, err = _run(["git", "rev-parse", "--short", "origin/main"], repo_root)
-        remote_commit = out or "unknown"
+        rc, out, err = _run(["git", "rev-parse", "--short", upstream], repo_root)
+        remote_commit = f"{out} ({upstream})" if out else "unknown"
 
         from rich.panel import Panel
         from rich.table import Table
