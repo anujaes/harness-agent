@@ -21,3 +21,16 @@ openpyxl>=3.0
 openai>=1.0,<3
 mcp>=1.12.0,<2
 qrcode>=7.4
+# Windows desktop tools (skipped on macOS/Linux)
+uiautomation>=2.0.18; sys_platform == 'win32'
+Pillow>=10.0; sys_platform == 'win32'
+pycaw>=20240210; sys_platform == 'win32'
+winrt-runtime>=2.0; sys_platform == 'win32'
+winrt-Windows.Media.Ocr>=2.0; sys_platform == 'win32'
+winrt-Windows.Graphics.Imaging>=2.0; sys_platform == 'win32'
+winrt-Windows.Storage>=2.0; sys_platform == 'win32'
+winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'
+winrt-Windows.Globalization>=2.0; sys_platform == 'win32'
+winrt-Windows.Foundation>=2.0; sys_platform == 'win32'
+winrt-Windows.Foundation.Collections>=2.0; sys_platform == 'win32'
+winrt-Windows.Devices.Radios>=2.0; sys_platform == 'win32'
