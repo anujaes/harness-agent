@@ -1,4 +1,7 @@
-"""Tests for jarvis.utils.clipboard — clean-copy helpers used by ⌃Y and /copy."""
+"""Tests for jarvis.utils.clipboard — clean-copy helpers used by ⌃Y and /copy —
+plus the Windows clipboard backends (text and /paste images)."""
+import sys
+
 import pytest
 
 from jarvis.utils.clipboard import (
@@ -152,3 +155,96 @@ def test_copy_nothing_to_copy(monkeypatch):
     handled, _ = ctx.handle_context("/copy", "")
     assert handled
     assert copied == []
+
+
+# ─── Windows clipboard (Win32 CF_UNICODETEXT) ─────────────────────────────
+
+_WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="Win32 clipboard")
+_UNICODE_SAMPLE = "héllo — 日本 🐍\nsecond line"
+
+
+@pytest.fixture()
+def _saved_clipboard():
+    """Put the user's clipboard text back after a real-clipboard test."""
+    from jarvis.utils import win_clipboard
+
+    before = win_clipboard.get_text()
+    yield win_clipboard
+    if before:
+        win_clipboard.set_text(before)
+
+
+def test_win_clipboard_is_inert_off_windows(monkeypatch):
+    from jarvis.utils import win_clipboard
+
+    monkeypatch.setattr(win_clipboard.sys, "platform", "linux")
+    assert win_clipboard.get_text() is None
+    assert win_clipboard.set_text("x") is False
+
+
+@_WINDOWS_ONLY
+def test_win_clipboard_round_trips_unicode(_saved_clipboard):
+    wc = _saved_clipboard
+    assert wc.set_text(_UNICODE_SAMPLE) is True
+    assert wc.get_text() == _UNICODE_SAMPLE  # CRLF on the clipboard, \n back out
+    assert wc.set_text("") is True
+    assert wc.get_text() == ""
+
+
+@_WINDOWS_ONLY
+def test_copy_text_to_clipboard_keeps_non_ascii_on_windows(_saved_clipboard, monkeypatch):
+    import jarvis.utils.clipboard as clip
+
+    monkeypatch.setitem(sys.modules, "pyperclip", None)  # force the native path
+    assert clip.copy_text_to_clipboard(_UNICODE_SAMPLE) is True
+    assert _saved_clipboard.get_text() == _UNICODE_SAMPLE
+
+
+def test_copy_text_falls_back_to_clip_with_utf16(monkeypatch):
+    import jarvis.utils.clipboard as clip
+    import jarvis.utils.win_clipboard as win_clipboard
+
+    monkeypatch.setitem(sys.modules, "pyperclip", None)
+    monkeypatch.setattr(clip.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(win_clipboard, "set_text", lambda text: False)
+    runs = []
+    monkeypatch.setattr(clip.subprocess, "run", lambda cmd, **k: runs.append((cmd, k["input"])))
+    assert clip.copy_text_to_clipboard("héllo") is True
+    cmd, data = runs[0]
+    assert cmd == ["clip"]
+    assert data == "﻿héllo".encode("utf-16-le")  # BOM tells clip.exe it's UTF-16
+
+
+# ─── clipboard images (/paste) ────────────────────────────────────────────
+
+
+def test_windows_clipboard_bitmap_becomes_png(tmp_path, monkeypatch):
+    Image = pytest.importorskip("PIL.Image")
+    ImageGrab = pytest.importorskip("PIL.ImageGrab")
+    from jarvis.tools import image_input
+
+    monkeypatch.setattr(image_input.sys, "platform", "win32")
+    monkeypatch.setattr(image_input.tempfile, "gettempdir", lambda: str(tmp_path))
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: Image.new("RGB", (8, 6), "red"), raising=False)
+    out = image_input.clipboard_image_to_file()
+    assert out == tmp_path / "jarvis_clipboard.png"
+    assert Image.open(out).size == (8, 6)
+
+
+def test_windows_clipboard_copied_file_is_used_directly(tmp_path, monkeypatch):
+    pytest.importorskip("PIL")
+    from PIL import ImageGrab
+
+    from jarvis.tools import image_input
+
+    photo = tmp_path / "photo.jpg"
+    photo.write_bytes(b"\xff\xd8\xff")
+    notes = tmp_path / "notes.txt"
+    notes.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(image_input.sys, "platform", "win32")
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: [str(notes), str(photo)], raising=False)
+    assert image_input.clipboard_image_to_file() == photo
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: [str(notes)], raising=False)
+    assert image_input.clipboard_image_to_file() is None
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: None, raising=False)
+    assert image_input.clipboard_image_to_file() is None

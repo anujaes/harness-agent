@@ -10,6 +10,7 @@ import hashlib
 import re
 import shlex
 import subprocess
+import sys
 import tempfile
 import pathlib
 from typing import Optional, Union
@@ -19,6 +20,9 @@ from .ocr import read_image_text
 from ..path_resolve import robust_resolve
 
 IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tiff", ".tif", ".webp", ".heic"})
+_FALLBACK_RE = r"(?:[\w./~\-\\ ]+?)\.(?:png|jpg|jpeg|gif|bmp|tiff?|webp|heic)\b"
+# Same, plus an optional drive letter (``C:\...``) for Windows paths.
+_WIN_FALLBACK_RE = r"(?:\b[A-Za-z]:)?(?:[\w./~\-\\ ]+?)\.(?:png|jpg|jpeg|gif|bmp|tiff?|webp|heic)\b"
 
 
 def _is_image_path(s: str) -> Optional[pathlib.Path]:
@@ -30,25 +34,41 @@ def _is_image_path(s: str) -> Optional[pathlib.Path]:
     return None
 
 
+def _windows_token_path(tok: str) -> str:
+    """Strip quotes and turn a ``file:///C:/...`` URL into a Windows path."""
+    tok = tok.strip().strip("'\"")
+    if tok.lower().startswith("file:"):
+        from urllib.request import url2pathname
+
+        rest = tok[5:]
+        if rest.lower().startswith("//localhost/"):
+            rest = rest[len("//localhost"):]
+        return url2pathname(rest)
+    return tok
+
+
 def extract_image_paths(text: str) -> list[tuple[str, pathlib.Path]]:
     """Return [(raw_token, resolved_path)] for image file paths found in text.
 
-    Handles shell-escaped drag-drop paths (e.g. ``/foo/bar\\ baz.png``) and quoted paths.
+    Handles shell-escaped drag-drop paths (e.g. ``/foo/bar\\ baz.png``) and quoted paths;
+    on Windows also ``C:\\...`` / ``"C:\\a b\\c.png"`` / ``file:///C:/...`` forms.
     """
     found: list[tuple[str, pathlib.Path]] = []
+    windows = sys.platform == "win32"
     try:
-        tokens = shlex.split(text, posix=True)
+        # Backslash is a path separator on Windows, not an escape.
+        tokens = shlex.split(text, posix=not windows)
     except ValueError:
         tokens = text.split()
 
     for tok in tokens:
-        p = _is_image_path(tok)
+        p = _is_image_path(_windows_token_path(tok) if windows else tok)
         if p:
             found.append((tok, p))
 
     # also scan raw regex for anything ending with image ext we missed
-    for m in re.finditer(r"(?:[\w./~\-\\ ]+?)\.(?:png|jpg|jpeg|gif|bmp|tiff?|webp|heic)\b",
-                         text, re.IGNORECASE):
+    pattern = _WIN_FALLBACK_RE if windows else _FALLBACK_RE
+    for m in re.finditer(pattern, text, re.IGNORECASE):
         raw = m.group(0).replace("\\ ", " ")
         p = _is_image_path(raw)
         if p and not any(p == rp for _, rp in found):
@@ -56,9 +76,39 @@ def extract_image_paths(text: str) -> list[tuple[str, pathlib.Path]]:
     return found
 
 
+def _windows_clipboard_image(tmp: pathlib.Path) -> Optional[pathlib.Path]:
+    """Clipboard bitmap → ``tmp`` (PNG); a copied image *file* → its own path."""
+    try:
+        from PIL import Image, ImageGrab
+    except ImportError:
+        return None
+    try:
+        data = ImageGrab.grabclipboard()
+    except Exception:
+        return None
+    if isinstance(data, Image.Image):
+        try:
+            img = data if data.mode in ("RGB", "RGBA", "L", "LA") else data.convert("RGBA")
+            img.save(tmp, "PNG")
+        except Exception:
+            return None
+        return tmp if tmp.exists() and tmp.stat().st_size > 0 else None
+    if isinstance(data, list):  # files copied in Explorer
+        for name in data:
+            p = pathlib.Path(name)
+            if p.is_file() and p.suffix.lower() in IMAGE_EXTS:
+                return p
+    return None
+
+
 def clipboard_image_to_file() -> Optional[pathlib.Path]:
-    """If the macOS clipboard contains an image, write it to a temp PNG and return its path."""
+    """If the clipboard contains an image, write it to a temp PNG and return its path.
+
+    On Windows an image file copied in Explorer is returned as-is (no copy).
+    """
     tmp = pathlib.Path(tempfile.gettempdir()) / "jarvis_clipboard.png"
+    if sys.platform == "win32":
+        return _windows_clipboard_image(tmp)
     script = f'''try
     set pngData to (the clipboard as «class PNGf»)
     set fp to open for access POSIX file "{tmp}" with write permission

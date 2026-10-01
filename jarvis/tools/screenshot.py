@@ -3,7 +3,7 @@
 The capture is saved under ``$TMPDIR/jarvis-screenshots/`` (newest 40 kept),
 scaled so its long edge is at most 1568 px, and attached to the tool result
 as a native image (``utils.tool_images``). Models without vision get the text in
-the capture (macOS Vision OCR) instead, with a note saying why.
+the capture (macOS Vision / Windows.Media.Ocr) instead, with a note saying why.
 
 Modes (first one given wins):
 
@@ -16,6 +16,11 @@ Modes (first one given wins):
 
 Screen/app/region captures report how image pixels map to screen points so
 the result can be used with ``click_at``.
+
+On Windows (``windows/capture.py``) "screen points" are physical pixels on the
+virtual desktop (the process is made per-monitor DPI aware), ``nothing``
+captures every monitor, and ``app`` uses ``PrintWindow`` so covered windows
+still come out whole.
 """
 from __future__ import annotations
 
@@ -45,6 +50,14 @@ _CHROME_APPS = (
     "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
 )
 _CHROME_BINS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser", "chrome", "msedge")
+# Windows installs, relative to %ProgramFiles%, %ProgramFiles(x86)%, %LOCALAPPDATA%.
+_WIN_CHROME_REL = (
+    r"Google\Chrome\Application\chrome.exe",
+    r"Microsoft\Edge\Application\msedge.exe",
+    r"BraveSoftware\Brave-Browser\Application\brave.exe",
+    r"Chromium\Application\chrome.exe",
+)
+_WIN_CHROME_EXES = ("chrome.exe", "msedge.exe", "brave.exe")
 _NATIVE = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 _IMAGE_EXTS = _NATIVE | {".heic", ".tif", ".tiff", ".bmp"}
 
@@ -72,6 +85,18 @@ _TERMINAL_APPS = {
 }
 _TERM_PROGRAMS = {"Apple_Terminal": "Terminal", "iTerm.app": "iTerm", "WezTerm": "WezTerm",
                   "ghostty": "Ghostty", "WarpTerminal": "Warp", "vscode": "your editor (VS Code / Cursor)"}
+# Windows: exe names of the apps hosting Jarvis (found by walking parent
+# processes). Hosts win over shells: pwsh inside Windows Terminal → "Windows Terminal".
+_WIN_TERMINAL_HOSTS = {
+    "windowsterminal.exe": "Windows Terminal", "code.exe": "VS Code",
+    "code - insiders.exe": "VS Code Insiders", "cursor.exe": "Cursor", "windsurf.exe": "Windsurf",
+    "zed.exe": "Zed", "wezterm-gui.exe": "WezTerm", "alacritty.exe": "Alacritty",
+    "hyper.exe": "Hyper", "tabby.exe": "Tabby", "warp.exe": "Warp", "mintty.exe": "Git Bash (mintty)",
+    "conemu64.exe": "ConEmu", "conemu.exe": "ConEmu", "idea64.exe": "IntelliJ IDEA",
+    "pycharm64.exe": "PyCharm", "fluent terminal.exe": "Fluent Terminal",
+}
+_WIN_SHELLS = {"pwsh.exe": "PowerShell", "powershell.exe": "Windows PowerShell",
+               "cmd.exe": "Command Prompt", "bash.exe": "Git Bash", "nu.exe": "Nushell"}
 
 # JXA: main screen size/scale plus the layer-0 windows, front to back.
 _WINDOWS_JXA = r"""
@@ -102,7 +127,13 @@ function run(argv) {
 def _new_path(ext: str = ".png") -> pathlib.Path:
     SHOT_DIR.mkdir(parents=True, exist_ok=True)
     stamp = time.strftime("%Y%m%d-%H%M%S")
-    return SHOT_DIR / f"shot-{stamp}-{time.monotonic_ns() % 1_000_000:06d}{ext}"
+    n = time.monotonic_ns() % 1_000_000
+    # Windows' monotonic clock ticks in whole milliseconds, so two captures in
+    # the same tick would share a name; bump until the stem is free in any
+    # extension (``_fit`` may turn ``x.png`` into ``x.jpg``).
+    while any(SHOT_DIR.glob(f"shot-{stamp}-{n:06d}.*")):
+        n = (n + 1) % 1_000_000
+    return SHOT_DIR / f"shot-{stamp}-{n:06d}{ext}"
 
 
 def _prune_old() -> None:
@@ -160,6 +191,35 @@ def _have_sips() -> bool:
     return sys.platform == "darwin" and shutil.which("sips") is not None
 
 
+def _pillow_fit(src: pathlib.Path, *, resize: bool) -> pathlib.Path | None:
+    """Pillow version of the ``sips`` path in :func:`_fit`; None when Pillow is
+    missing or can't read ``src`` (e.g. HEIC without a plugin)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(src) as im:
+            im.load()
+            img = im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
+    except Exception:
+        return None
+    if resize and max(img.size) > MAX_EDGE:
+        img.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)
+    dst = _new_path(".png")
+    try:
+        img.save(dst, "PNG")
+        if dst.stat().st_size > JPEG_OVER_BYTES:
+            jpg = dst.with_suffix(".jpg")
+            img.convert("RGB").save(jpg, "JPEG", quality=82)
+            dst.unlink(missing_ok=True)
+            dst = jpg
+    except OSError:
+        dst.unlink(missing_ok=True)
+        return None
+    return dst
+
+
 def _fit(src: pathlib.Path, *, keep_source: bool) -> pathlib.Path:
     """A copy of ``src`` the API accepts: png/jpeg, long edge ≤ MAX_EDGE, and
     JPEG when the PNG would be heavy. Returns ``src`` when it already fits."""
@@ -186,7 +246,14 @@ def _fit(src: pathlib.Path, *, keep_source: bool) -> pathlib.Path:
             if not keep_source:
                 src.unlink(missing_ok=True)
             return dst
-    convert = shutil.which("magick") or shutil.which("convert")
+    if sys.platform != "darwin":
+        dst = _pillow_fit(src, resize=big or size is None)
+        if dst is not None:
+            if not keep_source:
+                src.unlink(missing_ok=True)
+            return dst
+    # On Windows ``convert.exe`` is the FAT→NTFS disk tool, never ImageMagick.
+    convert = shutil.which("magick") or (None if sys.platform == "win32" else shutil.which("convert"))
     if convert:
         dst = _new_path(".png")
         r = subprocess.run([convert, str(src), "-resize", f"{MAX_EDGE}x{MAX_EDGE}>", str(dst)],
@@ -211,7 +278,10 @@ def _run_jxa(script: str, *args: str, timeout: float = 10.0) -> dict | None:
 
 def screen_recording_allowed() -> bool | None:
     """macOS's own answer (``CGPreflightScreenCaptureAccess``) for the app
-    that launched Jarvis; None when it can't be asked (not macOS, old OS)."""
+    that launched Jarvis; None when it can't be asked (not macOS, old OS).
+    Windows has no such permission, so it is always True there."""
+    if sys.platform == "win32":
+        return True
     if sys.platform != "darwin":
         return None
     try:
@@ -238,12 +308,34 @@ def terminal_app_name() -> str:
                 return pathlib.Path(first).stem
         except Exception:
             pass
+    if sys.platform == "win32":
+        name = _windows_terminal_name()
+        if name:
+            return name
     return _TERM_PROGRAMS.get(os.environ.get("TERM_PROGRAM", ""), "your terminal app")
+
+
+def _windows_terminal_name() -> str | None:
+    """The terminal/editor hosting Jarvis on Windows, from the parent chain."""
+    try:
+        from .windows.capture import ancestor_exes
+
+        chain = ancestor_exes()
+    except Exception:
+        chain = []
+    host = next((_WIN_TERMINAL_HOSTS[e] for e in chain if e in _WIN_TERMINAL_HOSTS), None)
+    if host:
+        return host
+    if os.environ.get("WT_SESSION"):
+        return "Windows Terminal"
+    return next((_WIN_SHELLS[e] for e in chain if e in _WIN_SHELLS), None)
 
 
 def request_screen_recording() -> None:
     """Ask macOS for the permission (adds the terminal to the list and shows
     the system prompt the first time) and open the Screen Recording pane."""
+    if sys.platform != "darwin":
+        return  # only macOS gates screen capture behind a permission
     try:
         import ctypes
 
@@ -261,6 +353,8 @@ def request_screen_recording() -> None:
 def permission_error() -> str:
     """Explain the missing permission — and, once per run, open the fix."""
     global _permission_requested
+    if sys.platform == "win32":
+        return _windows_capture_error()
     app = terminal_app_name()
     if not _permission_requested:
         _permission_requested = True
@@ -308,9 +402,40 @@ def find_chrome() -> str | None:
     env = os.environ.get("HARNESS_CHROME", "").strip()
     if env and os.path.exists(env):
         return env
+    if sys.platform == "win32":
+        return _find_chrome_windows()
     for p in _CHROME_APPS:
         if os.path.exists(p):
             return p
+    for name in _CHROME_BINS:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _find_chrome_windows() -> str | None:
+    roots = [os.environ.get(k) for k in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA", "ProgramW6432")]
+    for rel in _WIN_CHROME_REL:
+        for root in roots:
+            if root and os.path.isfile(os.path.join(root, rel)):
+                return os.path.join(root, rel)
+    # Per-machine/per-user "App Paths" registrations cover custom install dirs.
+    try:
+        import winreg
+
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            for exe in _WIN_CHROME_EXES:
+                key = rf"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{exe}"
+                try:
+                    with winreg.OpenKey(hive, key) as k:
+                        path = str(winreg.QueryValue(k, None)).strip('"')
+                except OSError:
+                    continue
+                if path and os.path.isfile(path):
+                    return path
+    except ImportError:
+        pass
     for name in _CHROME_BINS:
         found = shutil.which(name)
         if found:
@@ -345,8 +470,14 @@ def _chrome_capture(url: str, out: pathlib.Path, width: int, height: int, settle
         f"--window-size={width},{height}", f"--virtual-time-budget={settle_ms}",
         f"--screenshot={out}", url,
     ]
+    if sys.platform == "win32":
+        from ..utils.osinfo import CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW
+
+        group = {"creationflags": CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP}
+    else:
+        group = {"start_new_session": True}
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            stdin=subprocess.DEVNULL, start_new_session=True)
+                            stdin=subprocess.DEVNULL, **group)
     deadline = time.monotonic() + URL_TIMEOUT
     written_at = None
     try:
@@ -360,7 +491,10 @@ def _chrome_capture(url: str, out: pathlib.Path, width: int, height: int, settle
                     break
             time.sleep(0.1)
     finally:
-        if proc.poll() is None:
+        if sys.platform == "win32":
+            if proc.poll() is None:
+                _kill_tree_windows(proc)
+        elif proc.poll() is None:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (OSError, ProcessLookupError):
@@ -369,16 +503,46 @@ def _chrome_capture(url: str, out: pathlib.Path, width: int, height: int, settle
                 proc.wait(timeout=5)
             except Exception:
                 pass
-        shutil.rmtree(profile, ignore_errors=True)
+        _remove_profile(profile)
     if not out.exists() or out.stat().st_size == 0:
         return f"ERROR: headless Chrome produced no screenshot for {url} (timed out after {URL_TIMEOUT:.0f}s?)"
     return None
+
+
+def _kill_tree_windows(proc: subprocess.Popen) -> None:
+    """Chrome forks GPU/renderer children that outlive the parent and keep the
+    profile dir locked; ``taskkill /T`` ends the whole tree."""
+    from ..utils.osinfo import hidden_subprocess_kwargs
+
+    try:
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True,
+                       timeout=10, **hidden_subprocess_kwargs())
+    except Exception:
+        pass
+    if proc.poll() is None:
+        proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        pass
+
+
+def _remove_profile(profile: str) -> None:
+    shutil.rmtree(profile, ignore_errors=True)
+    # Windows keeps files locked for a moment after the processes exit.
+    for _ in range(10 if sys.platform == "win32" else 0):
+        if not os.path.exists(profile):
+            break
+        time.sleep(0.2)
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def _coords_note(origin: tuple[float, float], extent_pt: float, img_w: int) -> str:
     k = extent_pt / img_w if img_w else 1.0
     x0, y0 = origin
     if abs(k - 1.0) < 0.005 and not x0 and not y0:
+        if sys.platform == "win32":
+            return "Image pixels = screen pixels (use them directly with click_at)."
         return "Image pixels = screen points (use them directly with click_at)."
     offs = f"{x0:g} + " if x0 else ""
     offy = f"{y0:g} + " if y0 else ""
@@ -430,7 +594,11 @@ def screenshot(app: str = "", url: str = "", path: str = "", region: Any = None,
         if wait:
             time.sleep(wait)
         raw = _new_path()
-        if sys.platform != "darwin":
+        if sys.platform == "win32":
+            err, what, coords, note = _windows_capture(str(app or ""), region, raw)
+            if err:
+                return err
+        elif sys.platform != "darwin":
             if app or region:
                 return "ERROR: app/region capture is macOS-only here — use screenshot() or screenshot(url=…)."
             err = _linux_capture(raw)
@@ -521,6 +689,8 @@ def screenshot(app: str = "", url: str = "", path: str = "", region: Any = None,
 
 
 def _match_windows(windows: list[dict], app: str) -> list[dict]:
+    # macOS JXA window dicts. Windows matches in ``windows.capture.find_windows``
+    # (``_win32.match_windows``: exe stem, product name, alias, title).
     want = app.strip().lower().removesuffix(".app")
     usable = [w for w in windows if (w.get("w") or 0) >= 60 and (w.get("h") or 0) >= 40]
     exact = [w for w in usable if (w.get("owner") or "").lower() == want]
@@ -528,3 +698,68 @@ def _match_windows(windows: list[dict], app: str) -> list[dict]:
         return exact
     return [w for w in usable if want in (w.get("owner") or "").lower()
             or want in (w.get("name") or "").lower()]
+
+
+# ── Windows capture ───────────────────────────────────────────────────────
+
+
+def _windows_capture_error(detail: str = "") -> str:
+    why = f" ({detail})" if detail else ""
+    return ("ERROR: Windows refused the screen capture" + why + ". This happens while the PC is "
+            "locked, a UAC/secure-desktop prompt is up, or the Remote Desktop window is "
+            "minimized. screenshot(url=…) and screenshot(path=…) still work.")
+
+
+def _windows_capture(app: str, region: Any, out: pathlib.Path) -> tuple[str, str, Any, str]:
+    """Capture the screen / an app window / a region into ``out`` on Windows.
+
+    Returns ``(error, what, coords, note)``; coordinates are physical pixels
+    on the virtual desktop, the same space ``click_at`` uses.
+    """
+    try:
+        from .windows import capture as wc
+    except Exception as e:  # pragma: no cover - broken Python install
+        return f"ERROR: screen capture unavailable: {e}", "", "", ""
+    try:
+        import PIL  # noqa: F401
+    except ImportError:
+        return ("ERROR: screen capture on Windows needs Pillow (pip install Pillow). "
+                "screenshot(url=…) still works."), "", "", ""
+    wc.ensure_dpi_aware()
+    note = ""
+    if app:
+        wins = wc.find_windows(app)
+        if not wins:
+            listed = ", ".join(wc.app_names()[:20]) or "none visible"
+            return f"ERROR: no window found for app '{app}'. Apps with windows: {listed}", "", "", ""
+        win = wins[0]
+        try:
+            img, bounds, note = wc.capture_window(win)
+            img.save(out, "PNG")
+        except OSError as e:
+            return _windows_capture_error(str(e)), "", "", ""
+        title = f" “{win.title}”" if win.title else ""
+        return "", f"{win.app_name} window{title}", ("win", (bounds["x"], bounds["y"]), bounds["w"]), note
+    if region:
+        try:
+            r = region if isinstance(region, dict) else json.loads(str(region))
+            x, y = int(r.get("x", 0)), int(r.get("y", 0))
+            rw, rh = int(r["width"]), int(r["height"])
+        except Exception:
+            return ('ERROR: region must look like {"x": 0, "y": 0, "width": 800, "height": 600} '
+                    "(screen pixels)"), "", "", ""
+        if rw <= 0 or rh <= 0:
+            return "ERROR: region width and height must be positive", "", "", ""
+        try:
+            wc.grab_screen((x, y, x + rw, y + rh)).save(out, "PNG")
+        except OSError as e:
+            return _windows_capture_error(str(e)), "", "", ""
+        return "", f"screen region {rw}×{rh} at ({x}, {y})", ("region", (x, y), rw), ""
+    vx, vy, vw, _vh = wc.virtual_screen()
+    try:
+        wc.grab_screen().save(out, "PNG")
+    except OSError as e:
+        return _windows_capture_error(str(e)), "", "", ""
+    n = wc.monitor_count()
+    what = f"all {n} displays" if n > 1 else "the screen"
+    return "", what, ("screen", (vx, vy), vw), note

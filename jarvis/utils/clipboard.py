@@ -5,7 +5,8 @@ whitespace-padded lines. These helpers provide the clean path: copy the raw
 message text (no box drawing, no padding) straight to the system clipboard.
 
 ``copy_text_to_clipboard`` tries, in order: pyperclip, then the platform's
-native CLI tool (pbcopy / clip / wl-copy / xclip / xsel).
+native mechanism (pbcopy / Win32 ``CF_UNICODETEXT`` then clip / wl-copy /
+xclip / xsel).
 """
 from __future__ import annotations
 
@@ -14,6 +15,8 @@ import re
 import shutil
 import subprocess
 from typing import Any
+
+from .osinfo import hidden_subprocess_kwargs
 
 __all__ = [
     "copy_text_to_clipboard",
@@ -107,7 +110,18 @@ def copy_text_to_clipboard(text: str) -> bool:
     if sysname == "Darwin":
         candidates.append(["pbcopy"])
     elif sysname == "Windows":
-        candidates.append(["clip"])
+        from .win_clipboard import set_text
+
+        if set_text(text):
+            return True
+        # clip.exe decodes piped bytes with the console code page unless they
+        # are UTF-16 with a BOM, so feed it that to keep non-ASCII intact.
+        try:
+            subprocess.run(["clip"], input=("﻿" + text).encode("utf-16-le"),
+                           check=True, timeout=2, **hidden_subprocess_kwargs())
+            return True
+        except Exception:
+            return False
     else:
         if shutil.which("wl-copy"):
             candidates.append(["wl-copy"])

@@ -1,8 +1,12 @@
-"""OCR tools backed by macOS Vision framework."""
+"""OCR tools backed by macOS Vision framework (Windows.Media.Ocr on Windows)."""
 from concurrent.futures import ThreadPoolExecutor
+import os
 import pathlib
 import subprocess
+import sys
+import tempfile
 import threading
+from typing import Any
 
 from ..constants import (
     CWD, MAX_PARALLEL_TOOLS, OCR_MAX_FILES_DEFAULT, OCR_MAX_FILES_CAP,
@@ -40,12 +44,15 @@ def _clamp_int(value, default: int, min_value: int, max_value: int) -> int:
 
 
 def read_image_text(path: str) -> str:
-    """Extract all text from an image file using macOS Vision framework (on-device OCR)."""
+    """Extract all text from an image file with on-device OCR (macOS Vision
+    framework, or Windows.Media.Ocr on Windows)."""
     p = _resolve_path(path)
     if not p.exists():
         return f"ERROR: {path} not found"
     if not p.is_file():
         return f"ERROR: {path} is not a file"
+    if sys.platform == "win32":
+        return _read_image_text_windows(p)
 
     swift_code = f'''
 import Vision
@@ -77,6 +84,130 @@ try? handler.perform([request])
         stderr = result.stderr.strip()
         return f"ERROR: No text found in image. stderr: {stderr}" if stderr else "No text detected in image."
     return output
+
+
+# ── Windows backend (Windows.Media.Ocr via pywinrt) ──────────────────────
+
+_WIN_OCR_TIMEOUT = 60.0
+_WIN_LANG_HINT = ("Settings → Time & language → Language & region → add a language "
+                  "(its optional 'Optical character recognition' feature)")
+
+
+class _OcrSetupError(Exception):
+    """Windows OCR can't run at all (packages or language pack missing)."""
+
+
+def _run_coroutine(factory) -> Any:
+    """Run ``factory()``'s coroutine to completion from sync code.
+
+    Uses ``asyncio.run`` when this thread has no running loop; otherwise (e.g.
+    called from inside an event loop) runs it on a short-lived worker thread
+    so the caller's loop is never re-entered.
+    """
+    import asyncio
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(asyncio.wait_for(factory(), _WIN_OCR_TIMEOUT))
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="win-ocr") as ex:
+        future = ex.submit(lambda: asyncio.run(asyncio.wait_for(factory(), _WIN_OCR_TIMEOUT)))
+        return future.result(timeout=_WIN_OCR_TIMEOUT + 5)
+
+
+def _win_ocr_engine():
+    try:
+        from winrt.windows.media.ocr import OcrEngine
+    except ImportError as e:
+        raise _OcrSetupError(
+            "Windows OCR needs the WinRT bindings: pip install winrt-runtime winrt-Windows.Media.Ocr "
+            "winrt-Windows.Graphics.Imaging winrt-Windows.Storage winrt-Windows.Storage.Streams "
+            f"winrt-Windows.Globalization winrt-Windows.Foundation ({e})"
+        ) from e
+    engine = OcrEngine.try_create_from_user_profile_languages()
+    if engine is None:
+        # The profile's languages may lack OCR data while another one has it.
+        langs = list(OcrEngine.available_recognizer_languages or [])
+        if langs:
+            engine = OcrEngine.try_create_from_language(langs[0])
+    if engine is None:
+        raise _OcrSetupError(f"no Windows OCR language pack is installed — {_WIN_LANG_HINT}")
+    return engine
+
+
+async def _win_ocr_file(path: pathlib.Path) -> str:
+    from winrt.windows.graphics.imaging import BitmapDecoder
+    from winrt.windows.storage import FileAccessMode, StorageFile
+
+    engine = _win_ocr_engine()
+    file = await StorageFile.get_file_from_path_async(str(path))
+    stream = await file.open_async(FileAccessMode.READ)
+    try:
+        decoder = await BitmapDecoder.create_async(stream)
+        bitmap = await decoder.get_software_bitmap_async()
+        result = await engine.recognize_async(bitmap)
+    finally:
+        stream.close()
+    return "\n".join(line.text for line in result.lines if line.text.strip())
+
+
+def _png_copy_for_ocr(path: pathlib.Path, max_edge: int) -> pathlib.Path | None:
+    """A PNG copy the WinRT decoder accepts (long edge ≤ ``max_edge``);
+    None when Pillow can't read ``path`` either."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+    try:
+        with Image.open(path) as im:
+            im.load()
+            img = im.convert("RGBA" if "A" in im.getbands() else "RGB")
+    except Exception:
+        return None
+    if max(img.size) > max_edge:
+        img.thumbnail((max_edge, max_edge))
+    fd, tmp = tempfile.mkstemp(prefix="jarvis-ocr-", suffix=".png")
+    os.close(fd)
+    img.save(tmp, "PNG")
+    return pathlib.Path(tmp)
+
+
+def _read_image_text_windows(p: pathlib.Path) -> str:
+    try:
+        from winrt.windows.media.ocr import OcrEngine
+
+        max_edge = int(OcrEngine.max_image_dimension or 10000)
+    except Exception:
+        max_edge = 10000
+    from .screenshot import image_size
+
+    size = image_size(p)
+    too_big = size is not None and max(size) > max_edge
+    tmp: pathlib.Path | None = None
+    try:
+        text = None
+        if not too_big:
+            try:
+                text = _run_coroutine(lambda: _win_ocr_file(p))
+            except _OcrSetupError:
+                raise
+            except Exception:
+                text = None  # undecodable here (HEIC without codec, odd TIFF …) or too big
+        if text is None:
+            tmp = _png_copy_for_ocr(p, max_edge)
+            if tmp is None:
+                return (f"ERROR: Windows OCR can't decode {p.name} ({p.suffix or 'no extension'}). "
+                        "Convert it to PNG or JPEG first (HEIC needs the HEIF Image Extensions "
+                        "from the Microsoft Store).")
+            text = _run_coroutine(lambda: _win_ocr_file(tmp))
+    except _OcrSetupError as e:
+        return f"ERROR: {e}"
+    except Exception as e:
+        return f"ERROR: Windows OCR failed: {type(e).__name__}: {e}"
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
+    return text.strip() or "No text detected in image."
 
 
 def _discover_images(directory: str, pattern: str) -> list[pathlib.Path]:

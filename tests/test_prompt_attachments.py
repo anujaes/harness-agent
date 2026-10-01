@@ -1,3 +1,4 @@
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -132,6 +133,74 @@ class PromptAttachmentTests(unittest.TestCase):
             reg.llm_paths = dict(llm_snap)
             self.assertEqual(reg.path_for_label(label), sample.resolve())
             self.assertEqual(reg.llm_path_for_label(label), str(sample))
+
+    # ── Windows path forms (drag-drop from Explorer / Windows Terminal) ──
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows path syntax")
+    def test_windows_double_quoted_path_with_spaces(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            set_cwd(root)
+            image = root / "My Shots" / "Screen shot 1.png"
+            image.parent.mkdir()
+            image.write_bytes(b"\x89PNG\r\n")
+            tokenized, _, _ = prompt_attachments.tokenize_dropped_paths(f'look at "{image}" please')
+            self.assertEqual(tokenized, "look at [image 1] please")
+            reg = prompt_attachments.get_registry()
+            self.assertEqual(reg.llm_path_for_label("[image 1]"), str(image))
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows path syntax")
+    def test_windows_bare_backslash_paths(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            set_cwd(root)
+            image = root / "photo.png"
+            image.write_bytes(b"\x89PNG\r\n")
+            doc = root / "sub" / "report.pdf"
+            doc.parent.mkdir()
+            doc.write_bytes(b"%PDF")
+            forward = str(doc).replace("\\", "/")
+            tokenized, _, _ = prompt_attachments.tokenize_dropped_paths(f"compare {image} with {forward}")
+            self.assertEqual(tokenized, "compare [image 1] with [document 1]")
+            rel, _, _ = prompt_attachments.tokenize_dropped_paths("see .\\photo.png")
+            self.assertEqual(rel, "see [image 2]")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows path syntax")
+    def test_windows_file_urls(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            set_cwd(root)
+            image = root / "a b.png"
+            image.write_bytes(b"\x89PNG\r\n")
+            for url in (image.as_uri(), "file://localhost/" + image.as_uri()[len("file:///"):]):
+                prompt_attachments.reset_registry()
+                tokenized, _, _ = prompt_attachments.tokenize_dropped_paths(url)
+                self.assertEqual(tokenized, "[image 1]", url)
+                self.assertEqual(prompt_attachments.get_registry().llm_path_for_label("[image 1]"), str(image))
+
+    def test_windows_file_url_parsing(self):
+        conv = prompt_attachments._windows_file_url_path
+        self.assertEqual(conv("file:///C:/Users/a%20b/x.png"), r"C:\Users\a b\x.png")
+        self.assertEqual(conv(r"file://C:\Users\x.png"), r"C:\Users\x.png")
+        self.assertEqual(conv("file://localhost/C:/x.png"), r"C:\x.png")
+        self.assertEqual(conv("file://server/share/x.png"), r"\\server\share\x.png")
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows path syntax")
+    def test_image_input_extracts_windows_paths(self):
+        from jarvis.tools.image_input import extract_image_paths
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            set_cwd(root)
+            a = root / "shot one.png"
+            b = root / "b.jpg"
+            c = root / "c d.gif"
+            a.write_bytes(b"\x89PNG\r\n")
+            b.write_bytes(b"\xff\xd8\xff")
+            c.write_bytes(b"GIF89a")
+            hits = extract_image_paths(f'read "{a}" and {b} and {c.as_uri()}')
+            self.assertEqual([p for _, p in hits], [a.resolve(), b.resolve(), c.resolve()])
+            self.assertEqual(hits[0][0], f'"{a}"')  # the raw span, so callers can replace it
 
     def test_build_attachment_highlights(self):
         from jarvis.tui.prompt_highlight import build_attachment_highlights

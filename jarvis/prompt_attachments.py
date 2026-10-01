@@ -9,6 +9,7 @@ from __future__ import annotations
 import pathlib
 import re
 import shlex
+import sys
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote, urlparse
@@ -44,6 +45,19 @@ _PATH_FALLBACK_RE = re.compile(
 # Quoted absolute paths — common when terminals paste spaced filenames.
 _QUOTED_SINGLE_RE = re.compile(r"'(/[^'\n]+)'")
 _QUOTED_DOUBLE_RE = re.compile(r'"(/[^"\n]+)"')
+
+# Windows: backslash separates path parts (never an escape), paths start with a
+# drive (``C:\``) or a UNC share (``\\server\share``), and Explorer/Terminal
+# drops wrap spaced paths in double quotes.
+_IS_WINDOWS = sys.platform == "win32"
+_WIN_ABS = r"(?:[A-Za-z]:[\\/]|\\\\)"
+_WIN_PATH_FALLBACK_RE = re.compile(
+    rf"(?:\b[A-Za-z]:)?(?:[\w./~\-\\ ]+?)\.(?:{'|'.join(_SCAN_EXTS)})\b",
+    re.IGNORECASE,
+)
+_WIN_QUOTED_SINGLE_RE = re.compile(rf"'((?:/|{_WIN_ABS})[^'\n]+)'")
+_WIN_QUOTED_DOUBLE_RE = re.compile(rf'"((?:/|{_WIN_ABS})[^"\n]+)"')
+_WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def classify_attachment(path: pathlib.Path) -> str:
@@ -183,9 +197,24 @@ def restore_registry(
         _registry.llm_paths = dict(llm_paths)
 
 
+def _windows_file_url_path(url: str) -> str:
+    """``file:///C:/a%20b.png`` / ``file://C:\\x.png`` / ``file://host/share/x``
+    → a Windows path."""
+    rest = unquote(url[len("file://"):])
+    if rest.lower().startswith("localhost/"):
+        rest = rest[len("localhost"):]
+    if re.match(r"^/?[A-Za-z]:", rest):
+        return str(pathlib.PureWindowsPath(rest.lstrip("/")))
+    if rest.startswith("/"):
+        return str(pathlib.PureWindowsPath(rest))
+    return str(pathlib.PureWindowsPath("//" + rest))  # UNC share
+
+
 def _normalize_dropped_token(raw: str) -> str:
     candidate = (raw or "").strip().strip("'\"")
     if candidate.lower().startswith("file://"):
+        if _IS_WINDOWS:
+            return _windows_file_url_path(candidate)
         parsed = urlparse(candidate)
         return unquote(parsed.path)
     return candidate
@@ -204,6 +233,8 @@ def _looks_like_dropped_path(tok: str) -> bool:
     if tok.lower().startswith("file://"):
         return True
     if tok.startswith(("/", "~", "./", "../")):
+        return True
+    if _IS_WINDOWS and (_WIN_DRIVE_RE.match(tok) or tok.startswith(("\\\\", ".\\", "..\\"))):
         return True
     ext = pathlib.Path(tok).suffix.lower()
     return bool(ext and ext in _ATTACHABLE_EXTS)
@@ -243,7 +274,11 @@ def extract_droppable_paths(text: str) -> List[Tuple[str, pathlib.Path]]:
     def _overlaps(start: int, end: int) -> bool:
         return any(start < e and end > s for s, e in consumed_spans)
 
-    for match in _QUOTED_SINGLE_RE.finditer(text):
+    quoted_single = _WIN_QUOTED_SINGLE_RE if _IS_WINDOWS else _QUOTED_SINGLE_RE
+    quoted_double = _WIN_QUOTED_DOUBLE_RE if _IS_WINDOWS else _QUOTED_DOUBLE_RE
+    fallback = _WIN_PATH_FALLBACK_RE if _IS_WINDOWS else _PATH_FALLBACK_RE
+
+    for match in quoted_single.finditer(text):
         raw = match.group(0)
         inner = match.group(1)
         start, end = match.span()
@@ -255,7 +290,7 @@ def extract_droppable_paths(text: str) -> List[Tuple[str, pathlib.Path]]:
             consumed_spans.append((start, end))
             found[-1] = (raw, found[-1][1])
 
-    for match in _QUOTED_DOUBLE_RE.finditer(text):
+    for match in quoted_double.finditer(text):
         raw = match.group(0)
         inner = match.group(1)
         start, end = match.span()
@@ -268,7 +303,9 @@ def extract_droppable_paths(text: str) -> List[Tuple[str, pathlib.Path]]:
             found[-1] = (raw, found[-1][1])
 
     try:
-        tokens = shlex.split(text, posix=True)
+        # Non-POSIX mode on Windows keeps backslashes (and the quotes, which
+        # ``_normalize_dropped_token`` strips) so ``text.find(tok)`` still hits.
+        tokens = shlex.split(text, posix=not _IS_WINDOWS)
     except ValueError:
         tokens = text.split()
 
@@ -283,7 +320,7 @@ def extract_droppable_paths(text: str) -> List[Tuple[str, pathlib.Path]]:
         if len(found) > before:
             consumed_spans.append((idx, idx + len(tok)))
 
-    for match in _PATH_FALLBACK_RE.finditer(text):
+    for match in fallback.finditer(text):
         raw = match.group(0)
         if ATTACHMENT_TOKEN_RE.search(raw):
             continue
