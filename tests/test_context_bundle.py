@@ -1,7 +1,11 @@
 """Tests for budget-aware context bundles."""
 import unittest
+from unittest import mock
 
 from jarvis.tools import context as ctx
+
+# The indexers resolve ``_rel_path`` in their defining module, not the package.
+_REL_PATH = f"{ctx._build_file_indexes.__module__}._rel_path"
 
 
 class TestBundleBudget(unittest.TestCase):
@@ -70,33 +74,25 @@ class TestBundleBudget(unittest.TestCase):
             __import__("pathlib").Path("src/auth/register.py"),
             __import__("pathlib").Path("tests/test_login.py"),
         ]
-        # Patch _rel_path to return path as string
-        orig = ctx._rel_path
-        ctx._rel_path = lambda p: str(p)
-        try:
+        # Patch _rel_path where the indexers look it up, so paths stay POSIX-style
+        with mock.patch(_REL_PATH, lambda p: p.as_posix()):
             by_parent, by_stem = ctx._build_file_indexes(files)
             siblings = ctx._find_siblings_indexed("src/auth/login.py", by_parent)
             tests = ctx._find_tests_indexed("src/auth/login.py", by_stem)
-        finally:
-            ctx._rel_path = orig
         self.assertIn("src/auth/register.py", siblings)
         self.assertIn("tests/test_login.py", tests)
 
     def test_python_module_index_resolves_absolute_import(self):
         files = [__import__("pathlib").Path("jarvis/tools/context.py")]
-        orig = ctx._rel_path
-        ctx._rel_path = lambda p: str(p)
-        try:
+        with mock.patch(_REL_PATH, lambda p: p.as_posix()):
             mod_idx, path_idx = ctx._build_python_module_index(files)
-        finally:
-            ctx._rel_path = orig
         self.assertEqual(mod_idx["jarvis.tools.context"], "jarvis/tools/context.py")
         self.assertEqual(path_idx["jarvis/tools/context"], "jarvis/tools/context.py")
 
     def test_graph_is_stale_detects_deleted_files(self):
         files = [__import__("pathlib").Path("a.py")]
         orig = ctx._rel_path
-        ctx._rel_path = lambda p: str(p)
+        ctx._rel_path = lambda p: p.as_posix()
         try:
             current = ctx._mtimes_from_scan(files)
             cached = {"a.py": 1.0, "removed.py": 2.0}

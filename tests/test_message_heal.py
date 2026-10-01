@@ -96,10 +96,15 @@ class MessageHealTests(unittest.TestCase):
         if not db.exists():
             self.skipTest("no local sessions.db")
         conn = sqlite3.connect(db)
-        rows = conn.execute(
-            "SELECT role, content_json FROM messages WHERE session_id=? ORDER BY idx",
-            (1706,),
-        ).fetchall()
+        try:
+            rows = conn.execute(
+                "SELECT role, content_json FROM messages WHERE session_id=? ORDER BY idx",
+                (1706,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            self.skipTest("local sessions.db has no messages table")
+        finally:
+            conn.close()
         if not rows:
             self.skipTest("session 1706 missing")
         msgs = [{"role": r[0], "content": json.loads(r[1])} for r in rows]
