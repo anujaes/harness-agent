@@ -4,6 +4,7 @@ from datetime import datetime
 
 from ...constants import MAX_TOOL_OUTPUT, SEARCH_DEFAULT_MAX_RESULTS
 from ._common import _DDG_LINK_RE, _DDG_SNIPPET_RE, _HTML_TAG_RE
+from ...utils.osinfo import os_label
 
 _RECENCY_RE = re.compile(
     r"\b(latest|current|currently|recent|recently|today|todays?|now|"
@@ -61,7 +62,7 @@ def web_search(query: str, max_results: int = SEARCH_DEFAULT_MAX_RESULTS) -> str
         )
         req = urllib.request.Request(
             ia_url,
-            headers={"User-Agent": "HarnessAgent/1.0 (macOS; python)"},
+            headers={"User-Agent": f"HarnessAgent/1.0 ({os_label()}; python)"},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             status = r.status

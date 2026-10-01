@@ -17,6 +17,29 @@ from typing import Tuple
 
 from ..console import console
 from .. import state
+from ..utils.osinfo import IS_WINDOWS
+
+# macOS instructions in the scan prompt → their Windows equivalents.
+_WINDOWS_SCAN_EDITS = (
+    ("search the entire Mac by filename (milliseconds via Spotlight)",
+     "search the whole PC by filename (Everything / Windows Search index)"),
+    ("`run_bash` → `id -F` (macOS full name), `git config --global user.name`",
+     "`powershell` → `(Get-CimInstance Win32_UserAccount -Filter \"Name='$env:USERNAME'\").FullName` "
+     "(Windows full name); `run_bash` → `git config --global user.name`"),
+    ('`fast_find` query=".zshrc" or read `~/.zshrc`, `~/.zshenv`, `~/.bash_profile`',
+     "`powershell` → `$PROFILE` (then read it), plus `~/.bashrc` / `~/.bash_profile` (Git Bash) and "
+     "`[Environment]::GetEnvironmentVariables('User')`"),
+    ("`node --version`, `npm --version`, `python3 --version`",
+     "`node --version`, `npm --version`, `python --version`, `py --list`"),
+    ("`brew --version`, `nvm --version`, `bun --version`",
+     "`winget --version`, `scoop --version`, `choco --version`, `nvm version`, `bun --version`, `wsl -l -v`"),
+)
+
+
+def _windowsify(prompt: str) -> str:
+    for mac, win in _WINDOWS_SCAN_EDITS:
+        prompt = prompt.replace(mac, win)
+    return prompt
 
 
 def handle_scan(c: str, arg: str) -> Tuple[bool, str]:
@@ -48,6 +71,8 @@ def handle_scan(c: str, arg: str) -> Tuple[bool, str]:
     state.scan_completed = True
 
     prompt = _build_scan_prompt()
+    if IS_WINDOWS:
+        prompt = _windowsify(prompt)
     console.print("[cyan]◎ AI-driven scan initiated...[/]")
     console.print(
         "[dim]The LLM is now exploring your system using its tools.[/]\n"

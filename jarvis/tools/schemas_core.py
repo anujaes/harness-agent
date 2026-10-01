@@ -1,4 +1,20 @@
 """Tool JSON schemas for file/shell/git/internet tools."""
+from ..utils.osinfo import IS_WINDOWS
+
+# Platform wording for the shell / search schemas (macOS text is the original).
+if IS_WINDOWS:
+    _RUN_BASH_DESC = ("Execute a shell command in the working directory (Git Bash if installed, "
+                      "else PowerShell — see the system prompt)")
+    _SEARCH_CODE_DESC = "Regex search with ripgrep (grep or built-in fallback). Project-scoped by default."
+    _FAST_FIND_INTRO = ("Fast file/folder search by name across this PC — Everything (es.exe) or the "
+                        "Windows Search index plus a quick profile walk (1-3s). Falls back to 'fd' if installed. ")
+    _WHOLE_MACHINE = "whole PC"
+else:
+    _RUN_BASH_DESC = "Execute a shell command in the working directory"
+    _SEARCH_CODE_DESC = "Regex search with ripgrep (or grep fallback). Project-scoped by default."
+    _FAST_FIND_INTRO = ("Fast file/folder search by name across the Mac using Spotlight (mdfind) — "
+                        "near-instant (milliseconds), indexed. Falls back to 'fd' if installed. ")
+    _WHOLE_MACHINE = "whole Mac"
 
 CONTEXT_TOOLS = [
     {"name": "resolve_context", "description": (
@@ -153,10 +169,10 @@ CORE_TOOLS = [
         "path":{"type":"string"},
         "show_all":{"type":"boolean"},
         "allow_outside_project":{"type":"boolean","description":"Default false. Only true if the user explicitly asked to inspect outside the current project."}}}},
-    {"name":"run_bash","description":"Execute a shell command in the working directory",
+    {"name":"run_bash","description":_RUN_BASH_DESC,
      "input_schema":{"type":"object","properties":{
         "cmd":{"type":"string"},"timeout":{"type":"integer"}},"required":["cmd"]}},
-    {"name":"search_code","description":"Regex search with ripgrep (or grep fallback). Project-scoped by default.",
+    {"name":"search_code","description":_SEARCH_CODE_DESC,
      "input_schema":{"type":"object","properties":{
         "pattern":{"type":"string"},"path":{"type":"string"},
         "allow_outside_project":{"type":"boolean","description":"Default false. Only true if the user explicitly asked to search outside the current project."}},"required":["pattern"]}},
@@ -187,8 +203,7 @@ CORE_TOOLS = [
         "allow_outside_project":{"type":"boolean","description":"Default false. Only true if the user explicitly asked to rank files outside the current project."}},
         "required":["query"]}},
     {"name":"fast_find","description":(
-        "Fast file/folder search by name across the Mac using Spotlight (mdfind) — "
-        "near-instant (milliseconds), indexed. Falls back to 'fd' if installed. "
+        _FAST_FIND_INTRO +
         "ALWAYS prefer this over `run_bash` with 'find ~', 'find /', or recursive "
         "globbing — those scan the disk and take 30s+. Use fast_find for any query "
         "of the form 'where is X', 'find my Y', 'locate Z', 'find all PNGs named qr', "
@@ -197,7 +212,7 @@ CORE_TOOLS = [
     ),
      "input_schema":{"type":"object","properties":{
         "query":{"type":"string","description":"Name or substring to search for, e.g. 'resume', 'harness', 'qr'."},
-        "path":{"type":"string","description":"Optional folder to scope the search, e.g. '~/Desktop'. Empty = whole Mac."},
+        "path":{"type":"string","description":f"Optional folder to scope the search, e.g. '~/Desktop'. Empty = {_WHOLE_MACHINE}."},
         "kind":{"type":"string","enum":["any","file","folder"],"description":"Filter results. Default 'any'."},
         "max_results":{"type":"integer","description":"Max results. Default 50, max 500."},
         "ext":{"type":"string","description":"Extension filter, e.g. '.png' or 'png,jpg'. Optional."}},
@@ -207,17 +222,30 @@ CORE_TOOLS = [
     {"name":"git_log","description":"git log","input_schema":{"type":"object","properties":{"n":{"type":"integer"}}}},
 ]
 
+
+# Platform wording for the OCR / screenshot schemas (macOS text is the original).
+if IS_WINDOWS:
+    _OCR_ENGINE, _OCR_ENGINE_SHORT = "Windows.Media.Ocr", "Windows OCR"
+    _OCR_FORMATS = "PNG, JPG, JPEG, TIFF, BMP, GIF, WEBP (HEIC needs the HEIF extension)"
+    _SCREEN_UNITS, _WHOLE_SCREEN = "physical pixels", "all monitors"
+    _APP_EXAMPLES = "'chrome', 'code', 'Visual Studio Code', 'notepad'"
+else:
+    _OCR_ENGINE, _OCR_ENGINE_SHORT = "macOS Vision framework", "macOS Vision"
+    _OCR_FORMATS = "PNG, JPG, JPEG, HEIC, TIFF, BMP"
+    _SCREEN_UNITS, _WHOLE_SCREEN = "points", "the whole main display"
+    _APP_EXAMPLES = "'Safari', 'Simulator'"
+
 OCR_TOOLS = [
     {"name": "read_image_text", "description": (
-        "Extract text from an image file using macOS Vision framework (on-device OCR). "
-        "Supports PNG, JPG, JPEG, HEIC, TIFF, BMP. Accurate, no internet required. "
+        f"Extract text from an image file using {_OCR_ENGINE} (on-device OCR). "
+        f"Supports {_OCR_FORMATS}. Accurate, no internet required. "
         "Use this whenever the user points to a screenshot, photo, or image with text in it."
     ),
      "input_schema": {"type": "object", "properties": {
         "path": {"type": "string", "description": "Absolute or relative path to the image file"}},
         "required": ["path"]}},
     {"name": "read_images_text", "description": (
-        "Bulk OCR many image files concurrently using macOS Vision. Use this for folders "
+        f"Bulk OCR many image files concurrently using {_OCR_ENGINE_SHORT}. Use this for folders "
         "with many screenshots/photos where only some files contain useful IDs, documents, "
         "forms, licenses, or other important text. It scans only image extensions, limits "
         "the number of files, and returns compact per-file text previews to save tokens."
@@ -270,15 +298,15 @@ VISION_TOOLS = [
         "Targets (first given wins): path = view an existing image file; url = render a "
         "web page in headless Chrome (http://localhost:3000, localhost:5173, or an .html "
         "file) at width×height; app = that app's front window (even if covered); region = "
-        "a screen rectangle in points; nothing = the whole main display. Screen/app/region "
+        f"a screen rectangle in {_SCREEN_UNITS}; nothing = {_WHOLE_SCREEN}. Screen/app/region "
         "results say how image pixels map to click_at coordinates. After changing UI code, "
         "take a new screenshot to confirm the result instead of assuming."
     ),
      "input_schema":{"type":"object","properties":{
         "url":{"type":"string","description":"Page to render: http(s) URL, host:port, or local .html path"},
-        "app":{"type":"string","description":"App whose front window to capture, e.g. 'Safari', 'Simulator'"},
+        "app":{"type":"string","description":f"App whose front window to capture, e.g. {_APP_EXAMPLES}"},
         "path":{"type":"string","description":"Existing image file to view (png/jpg/gif/webp/heic/tiff)"},
-        "region":{"type":"object","description":"Screen rectangle in points","properties":{
+        "region":{"type":"object","description":f"Screen rectangle in {_SCREEN_UNITS}","properties":{
             "x":{"type":"integer"},"y":{"type":"integer"},
             "width":{"type":"integer"},"height":{"type":"integer"}}},
         "width":{"type":"integer","description":"url only: viewport width (default 1280)"},

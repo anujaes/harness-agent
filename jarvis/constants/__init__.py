@@ -66,4 +66,12 @@ from .oauth import (
     OAUTH_USER_AGENT, OAUTH_TOKEN_USER_AGENT, OAUTH_IDENTITY,
 )
 from .icons import TOOL_ICONS
-from .system_prompt import SYSTEM, build_base_system
+from .system_prompt import build_base_system
+
+
+def __getattr__(name: str):
+    # SYSTEM is built on first use: building it probes for Git Bash on Windows.
+    if name == "SYSTEM":
+        from .system_prompt import SYSTEM
+        return SYSTEM
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
