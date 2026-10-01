@@ -9,7 +9,8 @@ file and is read on demand.
 * ``bg_output(job_id, wait, tail, new_only)`` — status + latest output;
   ``wait`` blocks until the job finishes; no ``job_id`` lists every job.
 * ``bg_kill(job_id)`` — SIGTERM the job's whole process group, SIGKILL
-  after a grace period.
+  after a grace period (Windows: terminate the job's Job Object — every
+  process it started — at once).
 
 Finished jobs whose output hasn't been read are listed in the system prompt
 (``prompt_block``) so the model notices on its next request; the UI prints a
@@ -39,6 +40,8 @@ from typing import Callable
 
 from .. import state
 from ..constants import CWD, MAX_TOOL_OUTPUT
+from ..utils import osinfo
+from .shell import ProcessTree, windows_cmdline
 
 MAX_RUNNING = 8
 MAX_WAIT = 600.0
@@ -64,6 +67,7 @@ class Job:
     killed: bool = False
     read_done: bool = False  # the finished output has been returned to the model
     offset: int = 0          # bytes already returned (new_only)
+    tree: ProcessTree | None = None  # Windows: the Job Object the job runs in
 
     @property
     def running(self) -> bool:
@@ -139,6 +143,8 @@ def _watch(job: Job) -> None:
     with _lock:
         job.code = code
         job.t1 = time.monotonic()
+    if job.tree is not None and not job.killed:
+        job.tree.close()  # its leftovers (if any) outlive it, as on POSIX
     for hook in list(_finish_hooks):
         try:
             hook(job)
@@ -150,6 +156,10 @@ def _signal_group(job: Job, sig: int) -> None:
     try:
         if os.name == "posix":
             os.killpg(job.proc.pid, sig)
+        elif job.tree is not None:
+            # Windows has no SIGTERM for console programs in another console:
+            # end the whole job tree at once.
+            job.tree.kill()
         elif sig == signal.SIGTERM:
             job.proc.terminate()
         else:
@@ -163,11 +173,19 @@ def _stop(job: Job, grace: float = KILL_GRACE) -> None:
         return
     job.killed = True
     _signal_group(job, signal.SIGTERM)
+    if os.name != "posix":
+        grace = min(grace, 1.0)  # the tree was killed outright; just let it exit
     deadline = time.monotonic() + grace
     while job.proc.poll() is None and time.monotonic() < deadline:
         time.sleep(0.05)
     if job.proc.poll() is None:
         _signal_group(job, getattr(signal, "SIGKILL", signal.SIGTERM))
+    if job.tree is not None:
+        try:
+            job.proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            return  # still dying: keep the job handle so a later kill can use it
+        job.tree.close()
 
 
 @atexit.register
@@ -256,20 +274,25 @@ def run_bg(cmd: str) -> str:
         job_id = _next_id
         _next_id += 1
     log = LOG_DIR / f"job-{job_id}.log"
-    env = os.environ.copy()
-    env.setdefault("GIT_PAGER", "cat")
-    env.setdefault("PAGER", "cat")
+    env = osinfo.shell_env()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    args = osinfo.shell_argv(cmd)
+    extra: dict = {"start_new_session": True} if os.name == "posix" else {
+        # Own (hidden) console + process group: the job can't read or repaint
+        # the TUI's console, and Ctrl+C in it never reaches the job.
+        "creationflags": osinfo.CREATE_NEW_PROCESS_GROUP | osinfo.CREATE_NO_WINDOW,
+    }
+    popen_args = windows_cmdline(args) if isinstance(args, list) else args
     try:
         with open(log, "wb") as fh:
             proc = subprocess.Popen(
-                cmd, shell=True, cwd=str(CWD), env=env, stdout=fh,
-                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                start_new_session=(os.name == "posix"),
+                popen_args, shell=isinstance(args, str), cwd=str(CWD), env=env, stdout=fh,
+                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **extra,
             )
     except OSError as e:
         return f"ERROR: could not start: {e}"
-    job = Job(id=job_id, cmd=cmd, proc=proc, log=log)
+    tree = ProcessTree(proc) if os.name != "posix" else None
+    job = Job(id=job_id, cmd=cmd, proc=proc, log=log, tree=tree)
     with _lock:
         _jobs[job_id] = job
     watcher = threading.Thread(target=_watch, args=(job,), name=f"bg-job-{job_id}", daemon=True)

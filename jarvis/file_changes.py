@@ -20,6 +20,7 @@ import hashlib
 import itertools
 import os
 import pathlib
+import re
 import shlex
 import threading
 import time
@@ -515,13 +516,44 @@ def record(path: str | os.PathLike, before: str | None, after: str | None, actio
             pass
 
 
+_last_now = 0.0
+
+
+def _now() -> float:
+    """``time.time()``, strictly increasing: the list is ordered newest first,
+    and Windows' clock (~16 ms steps before Python 3.13) would tie rapid edits."""
+    global _last_now
+    with _lock:
+        _last_now = max(time.time(), _last_now + 1e-6)
+        return _last_now
+
+
+def _crlf_like_disk(key: str, before: str | None, after: str | None) -> tuple[str | None, str | None]:
+    """Give ``before`` / ``after`` the file's on-disk CRLF line endings.
+
+    Text-mode IO on Windows reads CRLF as ``\\n`` and writes ``\\n`` as CRLF,
+    so a tool reports LF text for a CRLF file. The ledger compares against
+    raw disk text later (``_settle``), so both must use the same endings —
+    otherwise every line reads as changed.
+    """
+    if after is None or "\r\n" in after or "\n" not in after:
+        return before, after
+    disk = _read(key)
+    if not isinstance(disk, str) or "\r\n" not in disk or disk.replace("\r\n", "\n") != after:
+        return before, after
+    if before is not None and "\r\n" not in before:
+        before = before.replace("\n", "\r\n")
+    return before, disk
+
+
 def _record(path, before, after, action) -> str | None:
     if before is None and after is None:
         return None
     if before is not None and before == after:
         return None
     key = _norm(path)
-    now = time.time()
+    before, after = _crlf_like_disk(key, before, after)
+    now = _now()
     big = any(t is not None and len(t) > MAX_TEXT for t in (before, after))
     with _lock:
         led = _ledger()
@@ -742,13 +774,48 @@ _GLOB_CHARS = set("*?[")
 _JUNK_CHARS = set(" \t\n'\"$`\\<>|&;(){}=,")
 
 
+# Command words (lower-case, ``.exe`` dropped) grouped by what they do to
+# their arguments — POSIX tools, PowerShell cmdlets + aliases, cmd.exe built-ins.
+_CD_WORDS = {"cd", "chdir", "pushd", "set-location", "sl"}
+_MOVE_WORDS = {"mv", "move", "move-item", "mi", "rename-item", "rni", "ren", "rename"}
+_DELETE_WORDS = {"rm", "rmdir", "rd", "del", "erase", "remove-item", "ri"}
+_COPY_WORDS = {"cp", "copy", "copy-item", "cpi", "xcopy", "robocopy"}
+_RECURSE_FLAGS = {"-recurse", "--recursive", "/s", "/e", "/mir"}
+_CD_FLAGS = {"/d", "-path", "-literalpath"}
+_MSYS_DRIVE = re.compile(r"^/([a-zA-Z])(?=/|$)")
+
+
+def _windows_native_shell() -> bool:
+    """PowerShell / cmd.exe: a backslash is a path separator, not an escape."""
+    from .utils import osinfo
+
+    return osinfo.IS_WINDOWS and osinfo.shell_kind() != "bash"
+
+
 def _tokens(cmd: str) -> list[str]:
     try:
-        lex = shlex.shlex(cmd, posix=os.name != "nt", punctuation_chars=True)
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
         lex.whitespace_split = True
+        if _windows_native_shell():
+            lex.escape = ""
         return list(lex)
     except ValueError:
         return cmd.split()
+
+
+def _host_path(tok: str) -> str:
+    """A path word as the OS sees it (Git Bash's ``/c/Users/x`` is ``C:/Users/x``)."""
+    raw = os.path.expanduser(tok)
+    if os.name == "nt":
+        m = _MSYS_DRIVE.match(raw)
+        if m:
+            raw = f"{m.group(1).upper()}:/" + raw[m.end():].lstrip("/")
+    return raw
+
+
+def _command_word(word: str) -> str:
+    head = os.path.basename(word).lower()
+    return head[:-4] if head.endswith(".exe") else head
 
 
 def _inside_project(p: pathlib.Path) -> bool:
@@ -784,7 +851,7 @@ def _shell_targets(cmd: str) -> list[str]:
     def consider(tok: str, walk: bool) -> None:
         if not tok or tok.startswith("-") or "://" in tok or len(tok) > 260 or "\x00" in tok:
             return
-        raw = os.path.expanduser(tok)
+        raw = _host_path(tok)
         base = pathlib.Path(raw) if os.path.isabs(raw) else cur / raw
         if _GLOB_CHARS & set(tok):
             # Only expand patterns that start inside the project: `find /usr/*/*/*`
@@ -818,17 +885,20 @@ def _shell_targets(cmd: str) -> list[str]:
         words, seg[:] = list(seg), []
         if not words:
             return
-        head = os.path.basename(words[0])
-        if head == "cd" and len(words) > 1:
-            nxt = pathlib.Path(os.path.expanduser(words[1]))
-            nxt = nxt if nxt.is_absolute() else cur / nxt
-            if nxt.is_dir():
-                cur = pathlib.Path(os.path.normpath(nxt))
+        head = _command_word(words[0])
+        if head in _CD_WORDS:
+            dest = [w for w in words[1:] if w.lower() not in _CD_FLAGS]
+            if dest:
+                nxt = pathlib.Path(_host_path(dest[0]))
+                nxt = nxt if nxt.is_absolute() else cur / nxt
+                if nxt.is_dir():
+                    cur = pathlib.Path(os.path.normpath(nxt))
             return
         flags = [w for w in words[1:] if w.startswith("-") and not w.startswith("--")]
-        recursive = any(("r" in f or "R" in f) for f in flags) or "--recursive" in words
+        recursive = any(("r" in f or "R" in f) for f in flags) \
+            or any(w.lower() in _RECURSE_FLAGS for w in words[1:])
         sub = words[1] if head == "git" and len(words) > 1 else ""
-        walk = head in {"mv", "move"} or (head in {"rm", "cp", "rmdir", "rd", "del", "copy"} and recursive) \
+        walk = head in _MOVE_WORDS or (head in _DELETE_WORDS | _COPY_WORDS and recursive) \
             or sub in {"mv", "rm", "checkout", "restore"}
         for w in words[1:]:
             consider(w, walk)

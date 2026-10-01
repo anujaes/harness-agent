@@ -92,7 +92,7 @@ def _should_skip(p: pathlib.Path) -> bool:
 def _rel_path(p: pathlib.Path) -> str:
     """Return path relative to CWD. Falls back to str(p) on ValueError."""
     try:
-        return str(p.relative_to(CWD))
+        return p.relative_to(CWD).as_posix()
     except ValueError:
         return str(p)
 

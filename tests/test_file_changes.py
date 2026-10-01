@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import pathlib
 import shutil
 import subprocess
 
@@ -9,6 +10,14 @@ import pytest
 
 from jarvis import file_changes as fc
 from jarvis import state
+from jarvis.tools.shell import run_process
+from jarvis.utils import osinfo
+
+# The shell tests run POSIX commands (rm, mv, sed, cp): a bash is needed —
+# always there on macOS / Linux, Git Bash on Windows.
+needs_sh = pytest.mark.skipif(
+    os.name == "nt" and osinfo.shell_kind() != "bash", reason="needs Git Bash on Windows"
+)
 
 
 @pytest.fixture
@@ -246,11 +255,14 @@ def test_broken_listener_never_breaks_a_write(proj):
 
 
 def sh(cmd, root):
+    """Run ``cmd`` the way run_bash does (same shell), wrapped in watch_shell."""
     finish = fc.watch_shell(cmd)
-    subprocess.run(cmd, shell=True, cwd=root, check=False, capture_output=True)
+    args = osinfo.shell_argv(cmd)
+    run_process(args, shell=isinstance(args, str), cwd=str(root), timeout=60)
     finish()
 
 
+@needs_sh
 def test_rm_shows_as_deleted(proj):
     write(proj, "old.py", "print('bye')\n")
     write(proj, "keep.py", "print('stay')\n")
@@ -262,6 +274,7 @@ def test_rm_shows_as_deleted(proj):
     assert [r[0] for r in d["hunks"][0]["rows"]] == ["-"]
 
 
+@needs_sh
 def test_mv_reads_as_a_rename(proj):
     write(proj, "a.py", "def f():\n    return 1\n")
     sh("mv a.py b.py", proj)
@@ -271,6 +284,7 @@ def test_mv_reads_as_a_rename(proj):
     assert "rename from a.py" in fc.patch_text() and "rename to b.py" in fc.patch_text()
 
 
+@needs_sh
 def test_in_place_edit_and_redirect(proj):
     f = write(proj, "conf.ini", "mode=dev\n")
     sh("sed -i.bak 's/dev/prod/' conf.ini && echo done > out.log", proj)
@@ -280,6 +294,7 @@ def test_in_place_edit_and_redirect(proj):
     assert f.read_text() == "mode=prod\n"
 
 
+@needs_sh
 def test_cd_then_rm_and_globs(proj):
     write(proj, "sub/a.tmp", "1\n")
     write(proj, "sub/b.tmp", "2\n")
@@ -288,6 +303,7 @@ def test_cd_then_rm_and_globs(proj):
     assert sorted(by_path(fc.summaries())) == ["sub/a.tmp", "sub/b.tmp"]
 
 
+@needs_sh
 def test_rm_recursive_walks_the_directory(proj):
     write(proj, "gen/one.py", "1\n")
     write(proj, "gen/deep/two.py", "2\n")
@@ -295,6 +311,7 @@ def test_rm_recursive_walks_the_directory(proj):
     assert sorted(by_path(fc.summaries())) == ["gen/deep/two.py", "gen/one.py"]
 
 
+@needs_sh
 def test_created_directory_reports_its_files(proj):
     write(proj, "tpl/a.txt", "a\n")
     write(proj, "tpl/b.txt", "b\n")
@@ -303,6 +320,7 @@ def test_created_directory_reports_its_files(proj):
     assert files["copy/a.txt"]["status"] == "added" and files["copy/b.txt"]["status"] == "added"
 
 
+@needs_sh
 def test_commands_that_change_nothing_record_nothing(proj):
     write(proj, "a.py", "x = 1\n")
     sh("cat a.py && ls && git status", proj)
@@ -310,11 +328,12 @@ def test_commands_that_change_nothing_record_nothing(proj):
     assert fc.summaries()["files"] == []
 
 
+@needs_sh
 def test_shell_ignores_files_outside_the_project_and_skip_dirs(proj, tmp_path_factory):
     outside = tmp_path_factory.mktemp("elsewhere") / "x.txt"
     outside.write_text("keep\n")
     vendored = write(proj, "node_modules/pkg/index.js", "1\n")
-    sh(f"rm {outside} {vendored}", proj)
+    sh(f"rm '{outside.as_posix()}' '{vendored.as_posix()}'", proj)
     assert fc.summaries()["files"] == []
     assert not outside.exists()
 
@@ -341,6 +360,7 @@ def test_shell_targets_tolerate_odd_input(proj):
 # ─── The patch is real ─────────────────────────────────────────────────
 
 
+@needs_sh
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_patch_applies_to_the_original_tree(proj, tmp_path):
     write(proj, "keep.txt", "same\n")
@@ -360,7 +380,7 @@ def test_patch_applies_to_the_original_tree(proj, tmp_path):
     patch = fc.patch_text()
     assert patch.startswith("diff --git")
     subprocess.run(["git", "init", "-q"], cwd=original, check=True)
-    (original / "changes.patch").write_text(patch)
+    (original / "changes.patch").write_bytes(patch.encode("utf-8"))
     res = subprocess.run(["git", "apply", "--check", "changes.patch"], cwd=original, capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
     subprocess.run(["git", "apply", "changes.patch"], cwd=original, check=True)
@@ -368,3 +388,79 @@ def test_patch_applies_to_the_original_tree(proj, tmp_path):
         assert (original / rel).read_text() == (proj / rel).read_text()
     assert not (original / "gone.txt").exists() and not (original / "mv_me.txt").exists()
     assert os.path.exists(original / "moved.txt")
+
+
+# ─── Windows: line endings, drive paths, PowerShell / cmd.exe verbs ─────
+
+
+def test_text_mode_crlf_writes_match_the_disk(proj):
+    """A tool on Windows reads a CRLF file as LF text and writes LF text back
+    as CRLF: the ledger must not see every line as changed once it re-reads
+    the file from disk (after a restart or an outside edit)."""
+    f = proj / "win.py"
+    f.write_bytes(b"a\r\nb\r\nc\r\n")
+    f.write_bytes(b"a\r\nB\r\nc\r\nd\r\n")
+    fc.record(f, "a\nb\nc\n", "a\nB\nc\nd\n", "edit")
+    fc.flush()
+    fc._ledgers.clear()
+    fc._persisted_sids.clear()
+    fc._dirty_sids.clear()
+    row = by_path(fc.summaries())["win.py"]
+    assert (row["added"], row["removed"]) == (2, 1)
+    assert "\r" not in "".join(r[3] for h in fc.detail(row["id"])["hunks"] for r in h["rows"])
+
+
+@pytest.fixture
+def native_shell(monkeypatch):
+    """Parse commands as PowerShell / cmd.exe (backslashes are separators)."""
+    monkeypatch.setattr(fc, "_windows_native_shell", lambda: True)
+
+
+def _rel(targets, root):
+    return sorted(pathlib.Path(t).relative_to(root).as_posix() for t in targets)
+
+
+def test_powershell_and_cmd_verbs_name_their_targets(proj, native_shell):
+    write(proj, "src/a.txt", "1\n")
+    write(proj, "src/deep/b.txt", "2\n")
+    write(proj, "one.txt", "x\n")
+    assert _rel(fc._shell_targets("Remove-Item -Recurse -Force src"), proj) == ["src/a.txt", "src/deep/b.txt"]
+    assert _rel(fc._shell_targets("rd /s /q src"), proj) == ["src/a.txt", "src/deep/b.txt"]
+    assert _rel(fc._shell_targets("del one.txt"), proj) == ["one.txt"]
+    assert _rel(fc._shell_targets("Move-Item one.txt two.txt"), proj) == ["one.txt", "two.txt"]
+    assert _rel(fc._shell_targets("Rename-Item -Path one.txt -NewName three.txt"), proj) == ["one.txt", "three.txt"]
+    assert _rel(fc._shell_targets('Set-Content -Path out.txt -Value "hi"'), proj) == ["hi", "out.txt"]
+    assert _rel(fc._shell_targets("echo hi | Out-File log.txt"), proj) == ["hi", "log.txt"]
+    assert _rel(fc._shell_targets("echo hi > redirected.txt"), proj) == ["hi", "redirected.txt"]
+    assert _rel(fc._shell_targets("Set-Location src; Remove-Item a.txt"), proj) == ["src/a.txt"]
+    assert _rel(fc._shell_targets("cd /d src && del a.txt"), proj) == ["src/a.txt"]
+
+
+def test_windows_paths_keep_their_backslashes(proj, native_shell):
+    write(proj, "sub dir/a.txt", "1\n")
+    abs_path = proj / "sub dir" / "a.txt"
+    assert _rel(fc._shell_targets('del "sub dir\\a.txt"'), proj) == ["sub dir/a.txt"]
+    assert _rel(fc._shell_targets(f'Remove-Item "{abs_path}"'), proj) == ["sub dir/a.txt"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Git Bash drive paths")
+def test_git_bash_drive_paths_are_understood(proj):
+    write(proj, "a.txt", "1\n")
+    drive, rest = os.path.splitdrive(str(proj / "a.txt"))
+    msys = "/" + drive[0].lower() + rest.replace("\\", "/")
+    assert _rel(fc._shell_targets(f"rm {msys}"), proj) == ["a.txt"]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="real PowerShell")
+def test_real_powershell_delete_and_rename(proj, monkeypatch):
+    monkeypatch.setenv("HARNESS_SHELL", "powershell")
+    osinfo.shell_kind.cache_clear()
+    try:
+        write(proj, "gone.txt", "bye\n")
+        write(proj, "old.txt", "keep me\n")
+        sh("Remove-Item gone.txt; Move-Item old.txt new.txt", proj)
+    finally:
+        monkeypatch.delenv("HARNESS_SHELL")
+        osinfo.shell_kind.cache_clear()
+    rows = {(f["path"], f["status"], f.get("from")) for f in fc.summaries()["files"]}
+    assert rows == {("gone.txt", "deleted", None), ("new.txt", "renamed", "old.txt")}

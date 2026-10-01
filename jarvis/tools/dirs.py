@@ -1,7 +1,8 @@
 """Directory listing, glob, and lightweight file ranking."""
-import os, pathlib, re, shutil, subprocess
+import os, pathlib, re, shutil, subprocess, time
 from ..constants import CWD, OCR_SCAN_CHARS
 from ..path_resolve import project_scope_error, robust_resolve
+from ..utils.osinfo import IS_WINDOWS, hidden_subprocess_kwargs
 
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
@@ -69,10 +70,10 @@ def glob_files(
         if not p.is_file() or (not allow_outside_project and _is_skipped(p)):
             continue
         try:
-            label = str(p.relative_to(CWD))
+            label = p.relative_to(CWD).as_posix()
         except ValueError:
             try:
-                label = str(p.relative_to(root))
+                label = p.relative_to(root).as_posix()
             except ValueError:
                 label = str(p)
         matches.append(label)
@@ -93,10 +94,14 @@ def fast_find(
     max_results: int = 50,
     ext: str = "",
 ) -> str:
-    """Fast file/folder search across the Mac using Spotlight (mdfind) or fd.
+    """Fast file/folder search across the machine by name.
+
+    macOS: Spotlight (mdfind). Windows: Everything (es.exe) when installed,
+    else the Windows Search index, else a bounded walk of the user profile.
+    fd is the fallback everywhere.
 
     - query: filename/substring to search for (e.g. 'harness', 'resume.pdf', 'qr').
-    - path: optional folder to scope the search (e.g. '~/Desktop'). Empty = whole Mac.
+    - path: optional folder to scope the search (e.g. '~/Desktop'). Empty = whole machine.
     - kind: 'any' | 'file' | 'folder'.
     - max_results: cap on returned entries (default 50, max 500).
     - ext: optional extension filter, e.g. '.png' or 'png,jpg' — applied after the
@@ -153,9 +158,35 @@ def fast_find(
         except Exception:
             pass
 
+    # 1b) Windows: Everything, then the Windows Search index
+    if IS_WINDOWS and not results:
+        def _keep(line: str) -> bool:
+            if kind == "file" and not os.path.isfile(line):
+                return False
+            if kind == "folder" and not os.path.isdir(line):
+                return False
+            return _ext_ok(line)
+
+        results = [p for p in _everything_find(q, scope, kind, max_results * (5 if exts else 1)) if _keep(p)]
+        if not results:
+            results = [p for p in _windows_search_find(q, scope, kind, max_results * (5 if exts else 1))
+                       if _keep(p)][:max_results]
+            # The index skips folders it wasn't told about (OneDrive, dev
+            # folders): top up with a quick walk of the profile / scope.
+            if len(results) < max_results:
+                have = {r.lower() for r in results}
+                results += [p for p in _walk_find(q, scope, kind, exts, max_results - len(results),
+                                                  seconds=WALK_TOPUP_SECONDS) if p.lower() not in have]
+        results = results[:max_results]
+
     # 2) Fallback to fd if nothing found and fd is installed
-    if not results and shutil.which("fd"):
-        cmd = ["fd", "--hidden", "--no-ignore", q]
+    fd = shutil.which("fd")
+    if IS_WINDOWS:
+        from .shell import which_exe
+
+        fd = which_exe("fd")  # never a .cmd shim: the query would reach cmd.exe
+    if not results and fd:
+        cmd = [fd, "--hidden", "--no-ignore", q]
         if kind == "file":
             cmd += ["-t", "f"]
         elif kind == "folder":
@@ -165,17 +196,140 @@ def fast_find(
         if scope:
             cmd.append(scope)
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                                 encoding="utf-8", errors="replace", **hidden_subprocess_kwargs())
             results = [l for l in out.stdout.splitlines() if l][:max_results]
         except Exception:
             pass
 
+    # 3) Windows, still nothing: a longer walk of the profile (bounded)
+    if IS_WINDOWS and not results:
+        results = _walk_find(q, scope, kind, exts, max_results, seconds=WALK_SECONDS)
+
     if not results:
-        where = scope or "whole Mac"
+        where = scope or ("whole PC" if IS_WINDOWS else "whole Mac")
         extra = f" (ext filter: {sorted(exts)})" if exts else ""
         return f"No matches for '{q}'{extra} in {where}"
     header = f"Found {len(results)} match(es) for '{q}'" + (f" in {scope}" if scope else "")
     return header + "\n" + "\n".join(results)
+
+
+# ── fast_find on Windows ───────────────────────────────────────────────────
+
+WALK_SECONDS = 8.0          # the walk as the last resort
+WALK_TOPUP_SECONDS = 3.0    # the walk topping up Windows Search results
+WALK_MAX_ENTRIES = 400_000
+_WALK_SKIP = SKIP_DIRS | {"$recycle.bin", "system volume information", "__pycache__"}
+_WALK_SKIP_PATHS = (os.path.join("appdata", "local", "temp"),)
+
+# {sql} is a PowerShell single-quoted literal (powershell.ps_quote): user
+# text is never parsed as PowerShell.
+_SEARCH_INDEX_PS = r"""
+$c = New-Object -ComObject ADODB.Connection
+$c.Open("Provider=Search.CollatorDSO;Extended Properties='Application=Windows';")
+$rs = $c.Execute({sql})
+while (-not $rs.EOF) {{ [Console]::Out.WriteLine([string]$rs.Fields.Item(0).Value); $rs.MoveNext() }}
+$rs.Close(); $c.Close()
+"""
+
+
+def _everything_find(q: str, scope: str, kind: str, limit: int) -> list[str]:
+    """Everything's command-line client (instant; needs Everything running)."""
+    from .shell import which_exe
+
+    es = which_exe("es")  # never a .cmd shim: the query would reach cmd.exe
+    if not es:
+        return []
+    cmd = [es, "-n", str(limit)]
+    if scope:
+        cmd += ["-path", scope]
+    if kind == "file":
+        cmd.append("/a-d")
+    elif kind == "folder":
+        cmd.append("/ad")
+    cmd.append(q)
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10, encoding="utf-8",
+                             errors="replace", stdin=subprocess.DEVNULL, **hidden_subprocess_kwargs())
+    except Exception:
+        return []
+    if out.returncode != 0:  # e.g. "Everything IPC not found" — the service isn't running
+        return []
+    return [line.strip() for line in out.stdout.splitlines() if line.strip()]
+
+
+def _sql_like(text: str) -> str:
+    """``text`` as a literal inside a Windows Search ``LIKE '%…%'``."""
+    text = text.replace("'", "''")
+    for ch in "[%_":
+        text = text.replace(ch, f"[{ch}]")
+    return text
+
+
+def _windows_search_find(q: str, scope: str, kind: str, limit: int) -> list[str]:
+    """The Windows Search index (what Explorer's search box uses), via ADODB."""
+    where = [f"System.FileName LIKE '%{_sql_like(q)}%'"]
+    if kind == "folder":
+        where.append("System.ItemType = 'Directory'")
+    elif kind == "file":
+        where.append("System.ItemType <> 'Directory'")
+    target = "file:" + (scope.replace("'", "''") if scope else "")
+    where.append(f"SCOPE='{target}'")
+    sql = f"SELECT TOP {int(limit)} System.ItemPathDisplay FROM SYSTEMINDEX WHERE " + " AND ".join(where)
+    try:
+        from .windows.powershell import ps_quote, run_ps
+    except ImportError:
+        return []
+    try:
+        r = run_ps(_SEARCH_INDEX_PS.format(sql=ps_quote(sql)), timeout=20)
+    except Exception:
+        return []
+    if r.returncode != 0:
+        return []
+    return [line.strip() for line in (r.stdout or "").splitlines() if line.strip()]
+
+
+def _walk_find(q: str, scope: str, kind: str, exts: set[str], max_results: int,
+               seconds: float = WALK_SECONDS) -> list[str]:
+    """Breadth-first name search of ``scope`` (default: the user profile),
+    shallow folders first, bounded by time and entry count. Skips junctions
+    (the profile has looping ones), caches, VCS and temp folders."""
+    root = scope or os.path.expanduser("~")
+    needle = q.lower()
+    deadline = time.monotonic() + seconds
+    seen = 0
+    results: list[str] = []
+    queue = [root]
+    while queue and len(results) < max_results:
+        folder = queue.pop(0)
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > WALK_MAX_ENTRIES or time.monotonic() > deadline:
+                return results
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+                if is_dir and (entry.is_junction() if hasattr(entry, "is_junction") else entry.is_symlink()):
+                    continue
+            except OSError:
+                continue
+            name = entry.name.lower()
+            if is_dir:
+                if name not in _WALK_SKIP and not entry.path.lower().endswith(_WALK_SKIP_PATHS):
+                    queue.append(entry.path)
+            if needle not in name:
+                continue
+            if (kind == "file" and is_dir) or (kind == "folder" and not is_dir):
+                continue
+            if exts and os.path.splitext(name)[1] not in exts:
+                continue
+            results.append(entry.path)
+            if len(results) >= max_results:
+                break
+    return results
 
 
 def _resolve(path: str) -> pathlib.Path:
@@ -192,7 +346,7 @@ def _is_skipped(path: pathlib.Path) -> bool:
 
 def _safe_rel(path: pathlib.Path) -> str:
     try:
-        return str(path.relative_to(CWD))
+        return path.relative_to(CWD).as_posix()
     except ValueError:
         return str(path)
 

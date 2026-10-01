@@ -1,11 +1,64 @@
 """run_bg / bg_output / bg_kill — background shell jobs."""
 import os
+import sys
 import time
 
 import pytest
 
 from jarvis import state
 from jarvis.tools import background as bg
+from jarvis.utils import osinfo
+
+# Tests that exercise POSIX shell syntax (`;`, `&`, `wait`, `false`) need a
+# bash: always there on macOS / Linux, Git Bash on Windows.
+needs_sh = pytest.mark.skipif(
+    os.name == "nt" and osinfo.shell_kind() != "bash", reason="needs Git Bash on Windows"
+)
+
+
+# Windows PowerShell takes seconds to start; tests that need a job to finish
+# within about a second can't hold there.
+needs_fast_shell = pytest.mark.skipif(
+    os.name == "nt" and osinfo.shell_kind() == "powershell", reason="PowerShell starts too slowly"
+)
+
+
+def _py(code: str) -> str:
+    """A shell command running ``code`` with this Python, in whatever shell
+    ``run_bg`` uses. ``code`` must not contain double quotes or ``$``."""
+    exe = sys.executable
+    if os.name == "nt" and osinfo.shell_kind() == "bash":
+        exe = exe.replace("\\", "/")
+    call = "& " if os.name == "nt" and osinfo.shell_kind() == "powershell" else ""
+    return f'{call}"{exe}" -c "{code}"'
+
+
+def _sleep_then_print(secs: float, text: str) -> str:
+    return _py(f"import time; time.sleep({secs}); print('{text}')")
+
+
+def _pid_alive(pid: int) -> bool:
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    import ctypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = ctypes.c_void_p
+    handle = k32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        k32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))
+        return code.value == 259  # STILL_ACTIVE
+    finally:
+        k32.CloseHandle(ctypes.c_void_p(handle))
 
 
 @pytest.fixture(autouse=True)
@@ -30,12 +83,14 @@ def _job_id(out: str) -> int:
     return int(out.split("#", 1)[1].split(" ", 1)[0])
 
 
+@needs_fast_shell
 def test_fast_command_answers_immediately():
-    out = bg.run_bg("echo hello-bg")
+    out = bg.run_bg("echo hello-bg")  # `echo` exists in every shell
     assert "exit=0" in out and "hello-bg" in out
     assert bg.prompt_block() == ""  # nothing left for the model to collect
 
 
+@needs_sh
 def test_long_job_runs_in_background_and_is_collected():
     t0 = time.monotonic()
     jid = _job_id(bg.run_bg("sleep 1.5; echo tests-done; exit 3"))
@@ -49,6 +104,7 @@ def test_long_job_runs_in_background_and_is_collected():
     assert bg.prompt_block() == ""  # read → no longer nagging the model
 
 
+@needs_sh
 def test_finished_unread_job_is_flagged_in_system_prompt():
     jid = _job_id(bg.run_bg("sleep 1.2; echo ok"))
     deadline = time.monotonic() + 10
@@ -62,6 +118,7 @@ def test_finished_unread_job_is_flagged_in_system_prompt():
     assert _background_jobs_block() == block
 
 
+@needs_sh
 def test_new_only_returns_just_fresh_output():
     jid = _job_id(bg.run_bg("echo one; sleep 1.3; echo two; sleep 0.4"))
 
@@ -74,6 +131,7 @@ def test_new_only_returns_just_fresh_output():
     assert second == "two"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
 def test_kill_stops_the_whole_process_group():
     jid = _job_id(bg.run_bg("sleep 30 & sleep 30; wait"))
     job = bg.jobs()[0]
@@ -83,6 +141,45 @@ def test_kill_stops_the_whole_process_group():
     with pytest.raises(ProcessLookupError):
         os.killpg(job.proc.pid, 0)  # no process of the group survives
     assert "already killed" in bg.bg_kill(jid)
+
+
+def test_kill_stops_grandchildren_too(tmp_path):
+    """The job's shell starts a Python that starts another: bg_kill must end
+    all three (Windows: the Job Object; POSIX: the process group)."""
+    pid_file = (tmp_path / "grandchild.pid").as_posix()
+    code = ("import subprocess, sys, time; "
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+            f"open('{pid_file}', 'w').write(str(p.pid)); time.sleep(60)")
+    jid = _job_id(bg.run_bg(_py(code)))
+    job = bg.jobs()[0]
+    deadline = time.monotonic() + 15
+    while not os.path.exists(pid_file) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    time.sleep(0.2)
+    grandchild = int(open(pid_file, encoding="utf-8").read())
+    assert _pid_alive(grandchild)
+
+    out = bg.bg_kill(jid)
+    assert out.startswith(f"stopped background job #{jid}")
+    assert job.status == "killed"
+    deadline = time.monotonic() + 5
+    while _pid_alive(grandchild) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not _pid_alive(grandchild)
+    assert not _pid_alive(job.proc.pid)
+    if job.tree is not None:
+        assert job.tree._job is None  # the Job Object handle is released once it exited
+    assert "already killed" in bg.bg_kill(jid)
+
+
+def test_output_is_utf8():
+    out = bg.run_bg(_py("print('h\\u00e9llo \\u65e5\\u672c')"))
+    if out.startswith("started background job #"):  # a slow-starting shell
+        out = bg.bg_output(_job_id(out), wait=30)
+        assert "exit 0" in out
+    else:
+        assert "exit=0" in out
+    assert "héllo 日本" in out
 
 
 def test_denied_and_invalid_calls(monkeypatch):
@@ -97,6 +194,7 @@ def test_denied_and_invalid_calls(monkeypatch):
     assert bg.bg_output() .startswith("No background jobs")
 
 
+@needs_sh
 def test_finish_hook_and_listing():
     seen = []
     bg.add_finish_hook(seen.append)
@@ -117,6 +215,7 @@ def test_output_is_cleaned_of_ansi_and_progress_frames():
     assert bg.clean_output(raw) == "PASSED\nDownloading 100%\n"
 
 
+@needs_sh
 def test_auto_wake_tells_the_model_not_to_wait_and_caps_waits(monkeypatch):
     bg.set_auto_wake(True)
     monkeypatch.setattr(bg, "WAKE_MAX_WAIT", 0.3)
@@ -132,12 +231,14 @@ def test_auto_wake_tells_the_model_not_to_wait_and_caps_waits(monkeypatch):
     assert "waits are capped" in polled and "Jarvis wakes you" in polled
 
 
+@needs_sh
 def test_without_auto_wake_the_old_polling_advice_stays():
     out = bg.run_bg("sleep 2")
     assert "add wait=120" in out
     assert "wakes you" not in bg.prompt_block()
 
 
+@needs_sh
 def test_wake_batch_takes_finished_unread_jobs_once():
     ok = _job_id(bg.run_bg("sleep 1.1; echo all-green"))
     bad = _job_id(bg.run_bg("sleep 1.1; echo boom; exit 2"))
@@ -238,13 +339,16 @@ def test_tui_wakes_the_agent_with_the_output_when_a_job_finishes(tui):
         async with app.run_test(size=(170, 40)) as pilot:  # wide → sidebar shown
             await pilot.pause(0.3)
             assert bg.auto_wake()
-            out = await asyncio.to_thread(bg.run_bg, "sleep 1.2; echo built")
+            cmd = _sleep_then_print(1.2, "built")
+            out = await asyncio.to_thread(bg.run_bg, cmd)
             jid = _job_id(out)
             assert "Don't wait for it" in out
             body = app.query_one(SidebarBody)
             body.refresh()
             await pilot.pause(0.1)
-            assert f"● #{jid} sleep 1.2; echo bui…" in body.render().plain  # clipped to fit
+            row = next(ln for ln in body.render().plain.splitlines() if f"● #{jid} " in ln)
+            shown = row.split(f"● #{jid} ", 1)[1]
+            assert "…" in shown and cmd.startswith(shown.split("…", 1)[0])  # clipped to fit
             assert not app._busy  # nothing is blocked on the job
 
             assert await _until(pilot, lambda: bool(seen))
@@ -271,7 +375,7 @@ def test_tui_job_finishing_mid_turn_waits_for_the_turn_and_the_queue(tui):
         app = JarvisTUI()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.3)
-            await asyncio.to_thread(bg.run_bg, "sleep 1.1; echo mid-turn")
+            await asyncio.to_thread(bg.run_bg, _sleep_then_print(1.1, "mid-turn"))
             app._begin_turn("refactor the parser")
             app._stash_prompt("and then update the docs")  # typed while busy
             assert await _until(pilot, lambda: len(seen) >= 3, secs=10)
@@ -283,6 +387,7 @@ def test_tui_job_finishing_mid_turn_waits_for_the_turn_and_the_queue(tui):
     asyncio.run(run())
 
 
+@needs_fast_shell
 def test_tui_no_wake_right_after_esc(tui):
     import asyncio
 
@@ -298,7 +403,7 @@ def test_tui_no_wake_right_after_esc(tui):
         app = JarvisTUI()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause(0.3)
-            await asyncio.to_thread(bg.run_bg, "sleep 1.1; echo quiet")
+            await asyncio.to_thread(bg.run_bg, _sleep_then_print(1.1, "quiet"))
             app._begin_turn("long task")
             await _until(pilot, lambda: not app._busy and len(seen) == 1, secs=10)
             await pilot.pause(1.5)
