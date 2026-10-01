@@ -24,6 +24,8 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
+Windows (PowerShell): `py -3 -m venv .venv`, then `.venv\Scripts\activate` (or `.\.venv\Scripts\python.exe -m pytest tests -q`). The suite must pass **without** `PYTHONUTF8=1`.
+
 `pip install -r requirements.txt` installs libraries only (no `jarvis` entry point). Prefer `pip install -e .` for local development. See `requirements.txt` header for the full verified sequence.
 
 ## Environment Variables
@@ -46,6 +48,8 @@ python -m pytest tests/ -q
 - `HARNESS_STREAM_REPLY` — set to `0` to disable live streaming of assistant text
 - `HARNESS_MOUSE` — set to `0` to run the TUI without mouse capture (native terminal selection)
 - `HARNESS_CHROME` — Chrome/Chromium binary for `screenshot(url=…)` (auto-detected otherwise)
+- `HARNESS_SHELL` — Windows only: shell for `run_bash` / `run_bg` / `!cmd`: `bash` | `powershell` | `cmd` (default: Git Bash if installed, else PowerShell)
+- `JARVIS_INSTALL_DIR` — Windows: where `scripts/install.ps1` put the managed checkout (default `%LOCALAPPDATA%\harness-agent`); `install_sync.MANAGED_INSTALL_DIR` honours it
 
 ## Architecture
 
@@ -133,6 +137,22 @@ default from the live catalog so a retired id never becomes a dead fallback.
 - **Skills**: SKILL.md packs auto-invoked by the LLM based on `description:` frontmatter. Project sources: `.harness/skills/`, `.skills/`, `.opencode/skills/`, `.claude/skills/`, `.agents/skills/`. Global (opt-in via `skills.global`): `~/.harness/skills/`, `~/.config/harness-agent/skills/`, `~/.claude/skills/`, `~/.config/opencode/skills/`. The picker modal (`tui/skill_modal.py`) browses, installs from a link, removes, moves and updates (see *Installing skills / MCP servers*) — no sticky selection.
 - **Custom commands**: User-defined prompt templates (`storage/commands.py`) triggered directly as `/<name> [args]` — dispatch falls through to them after all built-ins (`commands/dispatch.py:try_custom_command`). Project sources (recursive): `.harness/commands/`, `.claude/commands/`, `.opencode/command(s)/`, `.agents/commands/`. Global (opt-in via `commands.global`, default **on**): `~/.harness/commands/`, `~/.config/harness-agent/commands/`, `~/.claude/commands/`, `~/.config/opencode/command(s)/`. Body placeholders `$ARGUMENTS` and `$1`…`$9` are filled from the typed args (`expand_template`); args with no placeholder are appended. Managed via `/command` (`commands/command.py`): new/edit/show/delete/refresh/run, `global on|off`, `scope`, `export`/`import`. In the TUI, bare `/command` opens the manager modal (`tui/command_modal.py`): Enter inserts `/<name> ` into the prompt box, `t` inserts the full template for editing, `n`/`e` open an in-app editor sub-modal (name + description inputs + template TextArea; `^s` saves via `storage/commands.py:write_command`, which edits project AND global files in place and renames on name change), `d` delete, `i`/`x` import/export, `g`/`s` scope toggles. Custom commands also appear in the palette via `commands_catalog.filter_commands`; built-ins always shadow same-named custom commands.
 - **Pets**: a roster of pets (cat · dog · bunny · dragon, which starts as an egg and hatches after 10 turns) lives in a pen docked at the bottom of the sidebar (`tui/pet_pen.py:PetPen`, one active pet). It wanders, naps when idle, paces while a turn runs, plays with toys that appear by themselves (box / butterfly / cup on a shelf), chases a laser dot on hover, runs to clicks; click it to pat. Buttons: `pat · feed · play · nap · trick` and `fish` (20 s catch-the-fish game) · `focus` (25 min pomodoro, pet naps on a keyboard) · `pets` (switch / adopt via `pet_modal.PetAdoptScreen`) · `card` (`pet_modal.PetCardScreen`: portrait, stats, badges, wardrobe, roster). Scenery follows the clock (`sprites.sky`: clouds/moon+stars, December snow, October pumpkin). With the sidebar hidden the pet moves into the composer (`tui/pet_widget.py:PetBuddy` + `PetBubble` overlay in the always-blank row above the composer). `tui/mixins/pet.py:PetMixin` wires it up: turn start/finish (`_begin_turn`/`_turn_done`), tool results with input/output (`console_shim._tool_done` → `pet/events.classify`: tests pass/fail/fixed, commit, push, merge conflict), diffs (`console_shim.file_diff` → `_pet_diff`: lines shipped today, "whoa!" at ≥100 lines), typing, and the 2 s `_slow_refresh` tick (focus timer, rate-limited nudges). Level unlocks accessories (glasses Lv3 while working, party hat 5, scarf 7, crown 10) and growth stages (Lv5, Lv10); badges come from counters (`model.BADGES`). Desktop notifications (`utils/notify.py`) when a long turn ends while unfocused and when focus ends. `/pet …` (`commands/pet.py`) runs on the worker thread and reaches the UI through `pet.set_reaction_hook` / `pet.set_action_hook`; `/new` prints the session recap (`commands/history.py`). State: `~/.config/harness-agent/pet.json` (roster; old single-pet files still load); settings `pet.enabled`, `pet.nudges`, `pet.notify`. **Tests** must not touch the real `pet.json` — `tests/conftest.py` redirects `PET_FILE` and resets hooks/session for every test.
+
+### Windows support
+
+Windows 10 1809+ / 11 is a first-class platform (install: `scripts/install.ps1`; Windows Terminal recommended). Rules that keep both OSes working:
+
+- **Platform checks** come from `jarvis/utils/osinfo.py` (`IS_WINDOWS`, `IS_MACOS`, `os_label()`, `shell_kind()`, `package_manager_hint()`, `hidden_subprocess_kwargs()`). Add Windows branches; don't rewrite POSIX paths.
+- **Text I/O always passes `encoding="utf-8"`** (`read_text`, `write_text`, `open`, `subprocess(..., text=True)` reading tool output) — Windows defaults to cp1252. `cli._utf8_stdio()` makes piped stdout UTF-8.
+- **Private files** go through `utils/io.py:restrict_to_owner()` / `_secure_write()` — chmod 600 on POSIX, an owner-only ACL via `icacls` on Windows. Tests check with the `owner_only` fixture (`tests/conftest.py`).
+- **User-typed command lines** (`$EDITOR`, `/settings`, `/mcp add`, custom-command `$1`…) are split with `utils/cmdline.py:split_command()` (keeps `C:\…` backslashes); editors open via `utils/editor.py:open_in_editor()` (`code --wait` works; fallback nano / notepad).
+- **Key hints** are written Mac-style (`⌃G`, `⇧⇥`, `⌥↑`) and passed through `tui/keys.py:key_label()` / `key_table()`, which spell them `Ctrl+G` / `Shift+Tab` / `Alt+↑` on Windows.
+- **No GNU-only `strftime` flags** (`%-d`, `%-I` raise on Windows) — format numbers yourself (`f"{dt.hour % 12 or 12}"`).
+- **Sockets**: never `SO_REUSEADDR` on Windows (it lets a busy port bind) — see `web/server.py:_prepare_listen_socket`.
+- **Self-update**: `os.execv` is POSIX-only. On Windows `install_sync.reexec_jarvis()` runs the new Jarvis as a child and exits with its code; from a worker thread it first closes the TUI (`set_restart_handler` in `tui/app.py:run`, finished by `finish_pending_restart`). `pip_install_repo` renames the locked `jarvis.exe` aside so updates work while Jarvis is open.
+- **Tunnels** (`web/tunnel.py`): `cloudflared.exe` / `ngrok.exe` are found on PATH, in `%LOCALAPPDATA%\Microsoft\WinGet\Links` and the default install folders; the process tree is ended with `taskkill /T`.
+- **Desktop tools** (`tools/windows/`): UI Automation-based `launch_app`, `focus_app`, `quit_app`, `list_apps`, `frontmost_app`, `read_ui`, `click_element`, `click_menu`, `click_at`, `wait`, `check_permissions`, `type_text` (text over 200 chars is pasted via the clipboard, restoring the user's clipboard text), `key_press`, `clipboard_get/set`, `open_url`, `notify` (toasts), `speck` (SAPI), plus `powershell` (instead of `applescript`), `task_run` (a Scheduled Task, or `~/.harness/tasks/<name>.ps1` / `<project>/.harness/tasks/` — instead of `shortcut_run`) and `system_control` (instead of `mac_control`: volume, mute, unmute, battery, wifi_on/off, sleep, lock, dark_mode, light_mode, toggle_dark, brightness). Screenshots use physical-pixel coordinates; OCR uses `Windows.Media.Ocr`.
+- **Tests that spawn fake CLIs** use the `fake_program` fixture (shebang script on POSIX, `.py` + `.cmd` launcher on Windows) — never `#!/bin/sh` files.
 
 ### Adding a new tool
 

@@ -1,7 +1,7 @@
 # Harness — Jarvis Terminal Agent
 
 **AI coding agent for your terminal.**  
-Chat, run tools, edit files, execute shell commands, and control macOS — all from one TUI.
+Chat, run tools, edit files, execute shell commands, and control your desktop (macOS or Windows) — all from one TUI.
 
 
 
@@ -9,7 +9,7 @@ Chat, run tools, edit files, execute shell commands, and control macOS — all f
 
 ## ✨ Overview
 
-Harness is a **terminal-native AI agent** that lives in your terminal. You talk to it, it uses tools — reads/writes files, runs shell commands, searches code, uses git, controls macOS apps, OCRs images, browses the web — and gets work done right where your code lives.
+Harness is a **terminal-native AI agent** that lives in your terminal. You talk to it, it uses tools — reads/writes files, runs shell commands, searches code, uses git, controls macOS and Windows apps, OCRs images, browses the web — and gets work done right where your code lives.
 
 > **No web UI, no daemon.** Just `jarvis` in your project folder.
 
@@ -86,6 +86,7 @@ That's it. You'll be prompted to pick an auth method on first run.
 - [Usage](#-usage)
 - [Slash Commands](#-slash-commands)
 - [Environment Variables](#-environment-variables)
+- [Windows](#-windows)
 - [Project Layout](#-project-layout)
 - [Notes](#-notes)
 
@@ -98,7 +99,7 @@ That's it. You'll be prompted to pick an auth method on first run.
 | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | 💬 Interactive TUIRich terminal UI with markdown rendering, syntax-highlighted code, panels, and streaming responses.          | 🔐 Dual AuthUse an **API key** (sk-ant-…) or sign in with **OAuth** via PKCE.                                                             |
 | 📁 File OperationsRead, write, edit files. List directories, glob patterns, rank files by relevance, search code with ripgrep. | 🐚 Shell AccessRun any shell command, view output inline — no context switching.                                                          |
-| ⎇ Git IntegrationStatus, diff, log — all from the chat. No need to tab out.                                                    | 🖥️ macOS ControlLaunch/focus/quit apps, click UI elements, type text, run AppleScript, use keyboard shortcuts, clipboard, notifications. |
+| ⎇ Git IntegrationStatus, diff, log — all from the chat. No need to tab out.                                                    | 🖥️ Desktop ControlmacOS and Windows: launch/focus/quit apps, click UI elements, type text, run AppleScript / PowerShell, keyboard shortcuts, clipboard, notifications. |
 | 🌐 Web AccessSearch the web and fetch URLs. Verified search cross-checks multiple sources for factual answers.                 | 🧠 Persistent MemoryRemembers facts about you across sessions. Stores skills, notes, and aliases under `~/.config/claude-agent/`.         |
 | 📊 Cost Tracking`/cost` shows token usage and estimated USD spend per session.                                                 | 🔌 MCP SupportModel Context Protocol — connect external tools and data sources.                                                           |
 | 🎨 ThemesBuilt-in **red** and **purple** themes. Easily extensible.                                                            |                                                                                                                                            |
@@ -119,6 +120,7 @@ That's it. You'll be prompted to pick an auth method on first run.
   winget install -e --id Git.Git
   ```
   [Windows Terminal](https://aka.ms/terminal) is recommended for the TUI (it's the default on Windows 11).
+- **Windows 10 (1809+) or Windows 11** — for the Windows desktop-control tools (UI Automation, OCR, toasts, speech). [Git for Windows](https://git-scm.com/download/win) is recommended: its Git Bash runs `run_bash` commands.
 - **macOS** — required for macOS control features. Core agent works on any platform.
 - **API key** (sk-ant-…) or a **Pro/Max subscription**
 
@@ -284,7 +286,69 @@ On first launch, you'll pick how to authenticate:
 | `HARNESS_HTTP_READ_TIMEOUT`    | Streaming response timeout (s)         | `240` (OpenRouter), `600` (direct) |
 | `HARNESS_HTTP_CONNECT_TIMEOUT` | Connection timeout (s)                 | `30`                               |
 | `HARNESS_STREAM_REPLY`         | Set to `0` to disable live streaming   | `1`                                |
+| `HARNESS_SHELL`                | Windows only: shell for `run_bash` — `bash`, `powershell` or `cmd` | Git Bash if installed, else PowerShell |
 
+
+---
+
+## 🪟 Windows
+
+Jarvis runs natively on Windows 10 (1809+) and Windows 11 — same TUI, same tools, same
+config files, no WSL needed.
+
+**Install / update** (PowerShell or Command Prompt — no admin rights):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install.ps1 | iex"
+```
+
+The checkout lives in `%LOCALAPPDATA%\harness-agent` (override with `JARVIS_INSTALL_DIR`),
+and `jarvis.cmd` in `%USERPROFILE%\.local\bin` (override with `JARVIS_BIN_DIR`). Rerun the
+command, `jarvis update` or `/upgrade` to update — even while another Jarvis window is open.
+
+**Terminal:** use [Windows Terminal](https://aka.ms/terminal) (default on Windows 11). The
+legacy console host works, but mouse support, colours and Unicode rendering are much better
+in Windows Terminal. Key hints in the UI read `Ctrl+…` / `Alt+…` / `Shift+…` on Windows.
+
+**Shell:** `run_bash` / `run_bg` / `!cmd` use **Git Bash** (`Git\usr\bin\bash.exe`) when Git for Windows is installed
+(models write POSIX shell most reliably; `/c/Users/...` paths work too), otherwise
+**PowerShell**. Pick one explicitly with `HARNESS_SHELL=bash|powershell|cmd`:
+
+```powershell
+$env:HARNESS_SHELL = "powershell"   # this window only
+setx HARNESS_SHELL powershell       # future windows
+```
+
+**Desktop control:** the macOS tools have Windows twins built on UI Automation, so the same
+requests ("open Spotify and pause it", "click Save", "what's on my screen?") work:
+
+| macOS | Windows | Notes |
+| --- | --- | --- |
+| `launch_app` · `focus_app` · `quit_app` · `list_apps` · `frontmost_app` | same names | Start-menu apps, `.exe` names or paths |
+| `applescript` | `powershell` | Run a PowerShell script (COM / .NET automation) |
+| `read_ui` · `click_element` · `click_menu` · `wait` | same names | UI Automation tree instead of the Accessibility API |
+| `type_text` · `key_press` · `click_at` | same names | `cmd+…` in a chord maps to `ctrl+…`; text over 200 chars is pasted via the clipboard (your clipboard text is restored) |
+| `clipboard_get` · `clipboard_set` · `open_url` | same names | |
+| `notify` · `speck` | same names | Toast notifications · SAPI speech |
+| `check_permissions` | same name | Reports UI Automation / capture availability (no permission prompts) |
+| `shortcut_run` (Shortcuts app) | `task_run` | Runs a Windows Scheduled Task, or a script from `~/.harness/tasks/<name>.ps1` / `<project>/.harness/tasks/` |
+| `mac_control` | `system_control` | volume · mute · unmute · battery · wifi_on/off · sleep · lock · dark/light/toggle_dark · brightness |
+| `screenshot` · `read_image_text` | same names | GDI capture (coordinates are physical pixels) · OCR via `Windows.Media.Ocr` |
+
+**Feature parity:**
+
+| Feature | macOS | Windows |
+| --- | --- | --- |
+| TUI, web remote, QR, Anywhere tunnel | ✅ | ✅ (`winget install Cloudflare.cloudflared`) |
+| File, code-search, git, web and MCP tools | ✅ | ✅ |
+| Shell (`run_bash`, background jobs, `!cmd`) | bash | Git Bash · PowerShell · cmd |
+| App / UI control | Accessibility + AppleScript | UI Automation + PowerShell |
+| Screenshots & OCR | `screencapture` · Vision | GDI · `Windows.Media.Ocr` |
+| Notifications & speech | Notification Center · `say` | Toasts · SAPI |
+| Automation by name | Shortcuts (`shortcut_run`) | Scheduled Tasks / `.ps1` (`task_run`) |
+| Clipboard (`/copy`, ⌃Y) | ✅ | ✅ |
+| Private credential files | mode 600 | ACL limited to your user (`icacls`) |
+| Self-update (`/upgrade`, auto-update) | ✅ | ✅ |
 
 ---
 
@@ -382,6 +446,7 @@ harness/
 │   │   ├── schemas_core.py # Core tool schemas
 │   │   ├── schemas_mac.py  # macOS tool schemas
 │   │   ├── mac/            # macOS control
+│   │   ├── windows/        # Windows control (UI Automation, PowerShell)
 │   │   └── web/            # Web fetch & search
 │   │
 │   ├── repl/               # Response handling
@@ -426,8 +491,9 @@ harness/
 ## 📝 Notes
 
 - **macOS permissions** — UI control tools need **Accessibility** and **Automation** permissions. Enable them in: System Settings → Privacy & Security → Accessibility / Automation.
+- **Windows** — no permission prompts; UI control can't drive apps running as administrator unless Jarvis runs elevated too. See [Windows](#-windows).
 - **Credentials** — All config, keys, and history live under `~/.config/claude-agent/`.
-- **Tool selection is dynamic** — Harness only sends the schemas for tools it thinks you'll need, keeping context lean. Core file/code tools are always included; macOS, web, OCR tools are loaded on demand.
+- **Tool selection is dynamic** — Harness only sends the schemas for tools it thinks you'll need, keeping context lean. Core file/code tools are always included; desktop-control (macOS / Windows), web, OCR tools are loaded on demand.
 - **Project context** — Drop a `JARVIS.md` (or `CLAUDE.md`) in your project root, and the agent reads it automatically for project-specific instructions.
 
 ---
