@@ -3,6 +3,8 @@
 **AI coding agent for your terminal.**  
 Chat, run tools, edit files, execute shell commands, and control your desktop (macOS or Windows) — all from one TUI.
 
+> **🪟 Windows edition.** This is the `windows-support` branch of [github.com/anujaes/harness-agent](https://github.com/anujaes/harness-agent/tree/windows-support): the full Jarvis agent ported to Windows 10/11 (UI Automation desktop control, Git Bash/PowerShell shell, Windows OCR, toasts, …). It is maintained as its own branch and is not merged into `main`. For macOS/Linux use [PrajsRamteke/harness-agent](https://github.com/PrajsRamteke/harness-agent) (`main`).
+
 
 
 ---
@@ -22,7 +24,7 @@ Harness is a **terminal-native AI agent** that lives in your terminal. You talk 
 Open **PowerShell** or **Command Prompt** and paste this one line:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/install.ps1 | iex"
 ```
 
 Then open a **new terminal** in your project folder and run:
@@ -31,12 +33,9 @@ Then open a **new terminal** in your project folder and run:
 jarvis
 ```
 
-**No Python 3.10+ or Git yet?** Install both with `winget` first, open a new terminal, then run the command above:
-
-```powershell
-winget install -e --id Python.Python.3.12
-winget install -e --id Git.Git
-```
+**Fresh PC?** That's fine — if Python 3.10+ or Git is missing, the installer offers to install it
+with `winget` and carries on. No admin rights needed for Jarvis itself. Other ways to install
+(uv / pipx, manual clone) are under [Installation](#-installation).
 
 ### 🍎 macOS / 🐧 Linux
 
@@ -114,7 +113,7 @@ That's it. You'll be prompted to pick an auth method on first run.
   brew install python@3.11
   ```
   The install script also checks `/opt/homebrew/bin/python3.*` if Homebrew is not on your `PATH` yet.
-- **Windows** — Python 3.10+ and Git. Easiest via `winget`:
+- **Windows** — Python 3.10+ and Git (the one-line installer offers to install both). Manually via `winget`:
   ```powershell
   winget install -e --id Python.Python.3.12
   winget install -e --id Git.Git
@@ -128,26 +127,55 @@ That's it. You'll be prompted to pick an auth method on first run.
 
 ## 📦 Installation
 
-### One-command install — Windows
+### Windows — pick the way that suits you
+
+| You are… | Install with | Updates |
+| --- | --- | --- |
+| **Anyone** (recommended) | the one-line PowerShell installer below | automatic, or `jarvis update` |
+| **Python developer** using [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) | `uv tool install` / `pipx install` from Git | `uv tool upgrade` / `pipx upgrade` |
+| **Contributor** | `git clone` + editable install ([Development setup](#development-setup)) | `git pull` |
+
+#### 1. One-line installer (recommended)
 
 In **PowerShell** or **Command Prompt**:
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/install.ps1 | iex"
 ```
 
 Already inside PowerShell? The shorter form works too, and makes `jarvis` available in that same window straight away:
 
 ```powershell
-irm https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/install.ps1 | iex
 ```
 
 What it does:
 
-- clones Jarvis into `%LOCALAPPDATA%\harness-agent` and installs it in its own virtual environment (no admin rights needed)
+- checks for **Python 3.10+** and **Git**, and offers to install whichever is missing with `winget`
+- clones the `windows-support` branch into `%LOCALAPPDATA%\harness-agent` and installs it in its own virtual environment (no admin rights needed)
 - adds a `jarvis` command in `%USERPROFILE%\.local\bin` and puts that folder on your user `PATH`
+- keeps tracking `windows-support`, so Jarvis updates itself from this branch
 
-**Update:** run the same command again.
+**Update:** run the same command again, or `jarvis update` (`jarvis update --check` to preview).
+
+Installer options (set before running it): `JARVIS_YES=1` installs missing Python/Git without asking
+(unattended setups), `JARVIS_NO_MODIFY_PATH=1` leaves your `PATH` alone, `JARVIS_INSTALL_DIR` /
+`JARVIS_BIN_DIR` change the folders, `PYTHON` picks an interpreter. Example:
+
+```powershell
+$env:JARVIS_YES = "1"; irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/install.ps1 | iex
+```
+
+#### 2. uv or pipx (for Python users)
+
+```powershell
+uv tool install "git+https://github.com/anujaes/harness-agent.git@windows-support"
+# or
+pipx install "git+https://github.com/anujaes/harness-agent.git@windows-support"
+```
+
+Upgrade with `uv tool upgrade harness-jarvis` / `pipx upgrade harness-jarvis`. These installs are
+managed by uv/pipx, so Jarvis' own auto-update is skipped.
 
 **Troubleshooting: "'jarvis' is not recognized"** — open a **new** terminal so it picks up the updated `PATH`. For the current PowerShell window only:
 
@@ -156,10 +184,10 @@ $env:Path = "$HOME\.local\bin;$env:Path"
 jarvis
 ```
 
-**Uninstall:**
+**Uninstall** (removes the app and the `jarvis` command; asks before deleting your settings and sessions):
 
 ```powershell
-Remove-Item -Recurse -Force "$env:LOCALAPPDATA\harness-agent", "$HOME\.local\bin\jarvis.cmd"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/uninstall.ps1 | iex"
 ```
 
 ### One-command install — macOS / Linux
@@ -203,7 +231,7 @@ jarvis --help                # verify the CLI is on PATH
 **Windows (PowerShell):**
 
 ```powershell
-git clone https://github.com/PrajsRamteke/harness-agent.git
+git clone --branch windows-support https://github.com/anujaes/harness-agent.git
 cd harness-agent
 py -3 -m venv .venv
 .venv\Scripts\Activate.ps1   # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
@@ -296,10 +324,10 @@ On first launch, you'll pick how to authenticate:
 Jarvis runs natively on Windows 10 (1809+) and Windows 11 — same TUI, same tools, same
 config files, no WSL needed.
 
-**Install / update** (PowerShell or Command Prompt — no admin rights):
+**Install / update** (PowerShell or Command Prompt — no admin rights; see [Installation](#-installation) for uv/pipx):
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/PrajsRamteke/harness-agent/main/scripts/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/anujaes/harness-agent/windows-support/scripts/install.ps1 | iex"
 ```
 
 The checkout lives in `%LOCALAPPDATA%\harness-agent` (override with `JARVIS_INSTALL_DIR`),
@@ -498,6 +526,6 @@ harness/
 
 ---
 
-Built with ❤️ by [Prajwal Ramteke](https://github.com/PrajsRamteke)
+Built with ❤️ by [Prajwal Ramteke](https://github.com/PrajsRamteke) · Windows edition by [anujaes](https://github.com/anujaes) ([`windows-support`](https://github.com/anujaes/harness-agent/tree/windows-support) · [Windows issues](https://github.com/anujaes/harness-agent/issues))
 
 [GitHub](https://github.com/PrajsRamteke/harness-agent) · [Issues](https://github.com/PrajsRamteke/harness-agent/issues) · [Discussions](https://github.com/PrajsRamteke/harness-agent/discussions)
