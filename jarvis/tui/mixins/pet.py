@@ -21,6 +21,7 @@ from datetime import datetime
 
 from ... import pet as pet_pkg
 from ...pet import BADGE_INFO, Reaction, get_pet, get_roster, greeting, save_pet
+from ..keys import key_label
 from ...pet import events as pet_events
 from ...pet import session as pet_session
 
@@ -318,7 +319,7 @@ class PetMixin:
     def _pet_fish_toggle(self) -> None:
         pen = self._pet_pen()
         if pen is None or not self._pet_pen_visible():
-            self._pet_say("the fish game lives in the sidebar pen (⌃B) ✦", 4.0)
+            self._pet_say(key_label("the fish game lives in the sidebar pen (⌃B) ✦"), 4.0)
             return
         if get_pet().is_egg:
             self._pet_say("*wobble* …eggs can't fish yet!", 3.0)
@@ -508,10 +509,10 @@ class PetMixin:
                             f"context is {used / window:.0%} full — /new starts fresh")
         except Exception:
             pass
-        hour = datetime.fromtimestamp(now).hour
-        if recent_work and 0 <= hour < 5:
+        late = datetime.fromtimestamp(now)
+        if recent_work and 0 <= late.hour < 5:
             return fire("late", 10**9,
-                        f"it's {datetime.fromtimestamp(now):%-I:%M}am… commit & sleep soon? ♥")
+                        f"it's {late.hour % 12 or 12}:{late:%M}am… commit & sleep soon? ♥")
         if pet.fullness < 25:
             return fire("hungry", 45 * 60, "psst… I'm hungry (/pet feed) ♥")
         if pet.happiness < 30:

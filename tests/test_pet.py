@@ -1,5 +1,6 @@
 """Jarvis the pet: model maths, sprites, /pet command, and the TUI wiring."""
 import asyncio
+import io
 import json
 
 import pytest
@@ -14,7 +15,7 @@ H = 3600.0
 
 def _saved() -> dict:
     """The active pet as written to the (isolated) pet.json."""
-    data = json.loads(pm.PET_FILE.read_text())
+    data = json.loads(pm.PET_FILE.read_text(encoding="utf-8"))
     return data["pets"][data["active"]]
 
 
@@ -142,10 +143,10 @@ def test_save_load_round_trip_and_bad_files(tmp_path):
     assert (back.name, back.fur, back.xp, back.happiness, back.count("turns")) == \
         ("Mochi", "snow", 77, 12.5, 3)
 
-    path.write_text("{not json")
+    path.write_text("{not json", encoding="utf-8")
     assert pm.load_pet(path).name == pm.DEFAULT_NAME
     path.write_text(json.dumps({"name": 5, "xp": "lots", "happiness": 900, "energy": 3,
-                                "counters": {"pats": 2.0, "bad": "x"}}))
+                                "counters": {"pats": 2.0, "bad": "x"}}), encoding="utf-8")
     odd = pm.load_pet(path)
     assert odd.name == pm.DEFAULT_NAME and odd.xp == 0
     assert odd.happiness == 100 and odd.energy == 3.0 and odd.counters == {"pats": 2}
@@ -302,7 +303,7 @@ def test_dragon_egg_hatches_after_ten_turns():
 
 def test_roster_adopts_switches_and_loads_old_single_pet_files(tmp_path):
     path = tmp_path / "pet.json"
-    path.write_text(json.dumps({"name": "kuku", "xp": 23, "counters": {"pats": 3}}))
+    path.write_text(json.dumps({"name": "kuku", "xp": 23, "counters": {"pats": 3}}), encoding="utf-8")
     roster = pm.load_roster(path)
     assert len(roster.pets) == 1 and roster.pet.name == "kuku" and roster.pet.count("pats") == 3
     dog = roster.adopt("dog", "Biscuit")
@@ -342,7 +343,7 @@ def pet_cmd(monkeypatch, tmp_path):
     import jarvis.commands.pet as cmd
     import jarvis.storage.settings as settings_mod
 
-    rec = Console(record=True, width=120, file=open("/dev/null", "w"))
+    rec = Console(record=True, width=120, file=io.StringIO())
     monkeypatch.setattr(cmd, "console", rec)
     fresh = settings_mod.Settings(path=tmp_path / "settings.json")
     monkeypatch.setattr(settings_mod, "get_settings", lambda: fresh)
@@ -523,7 +524,7 @@ def test_badges_table_shows_meaning_and_progress():
     from jarvis.tui.pet_modal import badges_table
 
     pet = _pet(counters={"pats": 7}, badges={"first_turn": 0.0})
-    rec = Console(record=True, width=100, file=open("/dev/null", "w"))
+    rec = Console(record=True, width=100, file=io.StringIO())
     rec.print(badges_table(pet))
     out = rec.export_text()
     assert "Best Friends" in out and "100 pats" in out

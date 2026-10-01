@@ -10,6 +10,7 @@ from rich.text import Text
 from textual.widget import Widget
 
 from . import theme as ui
+from .keys import key_label
 
 IDLE, BUSY, UNDO = "idle", "busy", "undo"
 _NARROW = 70  # below this terminal width the button is just its glyph
@@ -56,9 +57,9 @@ class EnhanceButton(Widget):
 
     def _sync_tooltip(self) -> None:
         self.tooltip = {
-            IDLE: "Fix spelling & grammar with the current model (⌃G) — you still decide to send",
+            IDLE: key_label("Fix spelling & grammar with the current model (⌃G) — you still decide to send"),
             BUSY: "Enhancing… esc cancels",
-            UNDO: "Put your original prompt back (⌃G or ⌃Z)",
+            UNDO: key_label("Put your original prompt back (⌃G or ⌃Z)"),
         }[self.mode]
 
     def _narrow(self) -> bool:

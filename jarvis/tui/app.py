@@ -34,6 +34,7 @@ from rich.markup import escape as _rich_escape
 from rich.text import Text
 
 from .console_shim import TUIConsole
+from .keys import key_label
 from ..repl.tool_output_backfill import backfill_tool_output_history, inspector_has_entries
 from .ask_user import AskUserController, AskQuestion, normalize_questions
 from .web_bar import WebRemoteBar, WebRemoteQR
@@ -170,10 +171,10 @@ from .transcript import (  # noqa: E402
 )
 
 _SIDEBAR_MIN_WIDTH = 150
-_PLACEHOLDER = "Ask anything…   / commands · @ files · ! shell · ⇧↵ newline"
+_PLACEHOLDER = key_label("Ask anything…   / commands · @ files · ! shell · ⇧↵ newline")
 _BUSY_PLACEHOLDER = "Type a follow-up — it's queued for when Jarvis finishes · esc interrupts"
 # Shown in place of the default placeholder every few turns.
-_TIPS = (
+_TIPS = tuple(key_label(tip) for tip in (
     "Tip: ⇧⇥ toggles plan mode — research first, approve changes after",
     "Tip: select text with the mouse to copy it",
     "Tip: ↑ brings back your previous prompts",
@@ -183,7 +184,7 @@ _TIPS = (
     "Tip: /model switches models · /theme changes colors",
     "Tip: !git status runs a shell command without the model",
     "Tip: ⌃G (or ✦ enhance) fixes spelling & grammar before you send",
-)
+))
 
 
 # ─── App ─────────────────────────────────────────────────────────────────
@@ -400,9 +401,11 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
             self._start_web_remote(tui_console)
             if state.web_tunnel and self._web_bridge is not None:
                 if self._start_tunnel() == "missing":
+                    from ..web.tunnel import INSTALL_HINTS
+
                     self._tui_console.print(
                         f"[{ui.WARN}]--tunnel: no tunnel app found — install one: "
-                        f"brew install cloudflared (no account needed)[/]"
+                        f"{INSTALL_HINTS['cloudflare']} (no account needed)[/]"
                     )
 
         from ..auth.client import make_client
@@ -549,7 +552,7 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
             esc = _rich_escape(self._web_primary_url)
             self._tui_console.print(
                 f"[{ui.FG_DIM}]🌐 remote[/]  [link={esc}]{esc}[/link]  "
-                f"[{ui.FG_DIM}]· scan the QR top-right (click it to hide) · /web qr · ⌃⇧U copy[/]"
+                f"[{ui.FG_DIM}]· scan the QR top-right (click it to hide) · /web qr · {key_label('⌃⇧U')} copy[/]"
             )
 
     def _render_welcome_intro(self) -> None:
@@ -2049,15 +2052,21 @@ def run():
     # Auth is resolved in on_mount with interactive=False — use /login or /key modals.
     from .mouse_toggle import reset_mouse_fully
 
+    from .. import install_sync
+
     app = JarvisTUI()
+    # Windows restarts after an update by closing the app first (see install_sync).
+    install_sync.set_restart_handler(lambda: app.call_from_thread(app.exit))
     try:
         app.run(mouse=app._mouse_enabled)
     except KeyboardInterrupt:
         pass
     finally:
+        install_sync.set_restart_handler(None)
         try:
             from ..repl.stream import cancel_current_stream
             cancel_current_stream()
         except Exception:
             pass
         reset_mouse_fully()
+    install_sync.finish_pending_restart()

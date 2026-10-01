@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from ... import prompt_enhance
 from ... import state
 from ..enhance_button import BUSY, IDLE, UNDO, EnhanceButton
+from ..keys import key_label
 from ..prompt_area import PromptArea
 
 
@@ -122,7 +123,7 @@ class EnhanceMixin:
         self._enhance_replace(area, result.text)
         self._enhance_original, self._enhance_result = original, result.text
         self._enhance_sync()
-        self._set_status("✦ prompt enhanced — ↵ send · ⌃G undo")
+        self._set_status(key_label("✦ prompt enhanced — ↵ send · ⌃G undo"))
 
     def _enhance_finish(self) -> None:
         self._enhance_running = False

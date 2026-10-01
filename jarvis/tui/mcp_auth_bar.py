@@ -14,6 +14,7 @@ from textual.containers import Horizontal
 from textual.widgets import Button, Static
 
 from . import theme as ui
+from .keys import key_label
 
 # button id → app action
 _ACTIONS = {
@@ -98,7 +99,7 @@ class McpAuthBar(Horizontal):
 
     def compose(self) -> ComposeResult:
         yield Static("", id="mcp_auth_msg", markup=False)
-        yield Button("Authenticate  ⌃O", id="mcp_auth_go", classes="-primary", compact=True)
+        yield Button(key_label("Authenticate  ⌃O"), id="mcp_auth_go", classes="-primary", compact=True)
         yield Button("Copy link", id="mcp_auth_copy", compact=True)
         yield Button("Paste address", id="mcp_auth_paste", compact=True)
         yield Button("Cancel", id="mcp_auth_cancel", compact=True)
@@ -111,7 +112,7 @@ class McpAuthBar(Horizontal):
         self._name, self._extra, self._waiting = name, extra, waiting
         self.remove_class("hidden")
         go = self.query_one("#mcp_auth_go", Button)
-        label = "Open again  ⌃O" if waiting else "Authenticate  ⌃O"
+        label = key_label("Open again  ⌃O" if waiting else "Authenticate  ⌃O")
         if str(go.label) != label:
             go.label = label
             go.styles.width = len(label) + 4  # + padding

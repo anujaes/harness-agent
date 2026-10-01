@@ -6,6 +6,7 @@ from textual.binding import Binding
 from textual.containers import CenterMiddle, ScrollableContainer, Vertical
 from textual.widgets import Static
 
+from .keys import key_table
 from .modal_chrome import TUI_MODAL_CHROME_CSS, TuiModalScreen
 from .mouse_toggle import enable_mouse, disable_mouse
 from . import theme as ui
@@ -94,7 +95,7 @@ class ShortcutsHelpScreen(TuiModalScreen[None]):
             with Vertical(id="modal"):
                 yield Static("⌨  Keyboard shortcuts", id="modal_title")
                 with ScrollableContainer():
-                    yield Static(_SHORTCUTS.strip(), id="shortcuts_body", markup=True)
+                    yield Static(key_table(_SHORTCUTS.strip()), id="shortcuts_body", markup=True)
                 yield Static(
                     f"[bold {ui.FG_MUTE}]esc[/] or [bold {ui.FG_MUTE}]?[/] close",
                     id="modal_hint",

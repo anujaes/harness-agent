@@ -75,7 +75,7 @@ def env(monkeypatch, tmp_path):
 
         @staticmethod
         def write_servers(servers: dict) -> None:
-            (proj / ".mcp.json").write_text(json.dumps({"mcpServers": servers}))
+            (proj / ".mcp.json").write_text(json.dumps({"mcpServers": servers}), encoding="utf-8")
             mcp_config.reload_config()
 
     yield Env
@@ -312,7 +312,7 @@ def test_smart_add_previews_and_adds_a_stdio_server_to_the_project(env, monkeypa
             await pilot.pause(2.6)  # add → result → auto-close
 
     _run(run())
-    data = json.loads((env.project / ".mcp.json").read_text())
+    data = json.loads((env.project / ".mcp.json").read_text(encoding="utf-8"))
     assert data["mcpServers"]["memory"]["command"] == "npx"
     assert results and results[0]["servers"][0]["status"] == "connected"
     assert results[0]["servers"][0]["scope"] == "project"
@@ -389,7 +389,8 @@ def test_skill_install_from_a_local_folder_via_the_modal(env):
     src = env.tmp / "src" / "alpha-notes"
     src.mkdir(parents=True)
     (src / "SKILL.md").write_text(
-        "---\nname: alpha-notes\ndescription: Turn meeting notes into action items.\n---\n# Alpha\n"
+        "---\nname: alpha-notes\ndescription: Turn meeting notes into action items.\n---\n# Alpha\n",
+        encoding="utf-8",
     )
 
     async def run():
@@ -421,7 +422,7 @@ def test_skill_browser_remove_needs_a_second_press(env):
 
     d = env.project / ".harness" / "skills" / "beta-review"
     d.mkdir(parents=True)
-    (d / "SKILL.md").write_text("---\nname: beta-review\ndescription: Review a pull request.\n---\nbody\n")
+    (d / "SKILL.md").write_text("---\nname: beta-review\ndescription: Review a pull request.\n---\nbody\n", encoding="utf-8")
 
     async def run():
         app = env.app_cls()
@@ -465,7 +466,7 @@ def test_agent_mcp_add_shows_the_sign_in_bar(env, monkeypatch):
 
     _run(run())
     assert "auth_required" in out[0] or "Authenticate" in out[0]
-    data = json.loads((env.project / ".mcp.json").read_text())
+    data = json.loads((env.project / ".mcp.json").read_text(encoding="utf-8"))
     assert data["mcpServers"]["example"]["url"] == "https://mcp.example.com/mcp"
 
 
@@ -570,6 +571,6 @@ def test_agent_mcp_add_asks_for_a_missing_key_with_a_hidden_input(env, monkeypat
 
     _run(run())
     assert get_secret("GITHUB_PERSONAL_ACCESS_TOKEN") == "ghp_hidden"
-    cfg = (env.project / ".mcp.json").read_text()
+    cfg = (env.project / ".mcp.json").read_text(encoding="utf-8")
     assert "ghp_hidden" not in cfg and "${GITHUB_PERSONAL_ACCESS_TOKEN}" in cfg
     assert out and "connected" in out[0]

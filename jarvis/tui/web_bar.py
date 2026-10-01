@@ -13,6 +13,7 @@ from textual.widgets import Static
 from ..web.qr_ascii import qr_ascii, qr_dimensions
 from . import theme as ui
 from .footer import FooterBar
+from .keys import key_label
 
 
 def qr_target(url: str) -> str:
@@ -160,7 +161,7 @@ class WebRemoteBar(Horizontal):
                 "toggle_web_qr",
             ),
             (f"[{ui.FG_MUTE}]QR + link[/]", "web_connect"),
-            (f"[{ui.FG_DIM}]⌃⇧U copy[/]", "copy_web_url"),
+            (f"[{ui.FG_DIM}]{key_label('⌃⇧U')} copy[/]", "copy_web_url"),
         ]
         try:
             self.query_one("#web_open", FooterBar).set_segments(segments)

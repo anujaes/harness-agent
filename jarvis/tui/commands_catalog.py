@@ -5,6 +5,7 @@ Repeated subcommand groups (``/memory add``, ``/lesson search``,
 palette stays scannable. The full subcommand surface is still reachable by
 typing the command directly — see each modal for the in-modal key bindings.
 """
+from .keys import key_label
 
 COMMANDS = [
     # Session
@@ -31,7 +32,7 @@ COMMANDS = [
     # Local commands — shell/file/git that run without LLM
     ("/local", "open the local commands modal (pick and run ls, pwd, cd, git, find, run, undo, diff)"),
     # Clipboard
-    ("/copy", "copy last reply — ⌃Y · 'code' = last code block · 'all' = whole chat"),
+    ("/copy", key_label("copy last reply — ⌃Y · 'code' = last code block · 'all' = whole chat")),
     ("/paste", "send clipboard text / OCR clipboard image"),
     # Agents — modal handles browse · activate · new · edit · global · scope
     ("/agent", "open the agent control modal"),
@@ -58,8 +59,8 @@ COMMANDS = [
     ("/version", "show Jarvis version"),
     # Control
     ("/think", "toggle extended thinking (bare /think) — or open effort picker"),
-    ("/verbose", "toggle trace — thinking + tool output previews (⌃T)"),
-    ("/sidebar", "toggle the session sidebar (⌃B)"),
+    ("/verbose", key_label("toggle trace — thinking + tool output previews (⌃T)")),
+    ("/sidebar", key_label("toggle the session sidebar (⌃B)")),
     ("/web", "open this session in a browser — QR + link (starts the web remote)"),
     ("/web anywhere", "public HTTPS link — use Jarvis from any network (Cloudflare / ngrok tunnel)"),
     ("/web hide", "hide the corner QR code (/web show brings it back)"),

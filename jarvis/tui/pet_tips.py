@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import random
 
+from .keys import key_label
+
 _PET_TIPS = (
     "psst: click me to pet me, double-click for this card",
     "I earn XP whenever we finish a turn together ✦",
@@ -15,7 +17,7 @@ _PET_TIPS = (
 
 
 def random_tip() -> str:
-    tips = list(_PET_TIPS)
+    tips = [key_label(t) for t in _PET_TIPS]
     try:
         from .app import _TIPS
 

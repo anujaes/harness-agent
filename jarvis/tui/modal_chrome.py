@@ -284,8 +284,8 @@ def relative_time(ts: float | None) -> str:
     if days < 7:
         return then.strftime("%A").lower()
     if then.year == now.year:
-        return then.strftime("%b %-d")
-    return then.strftime("%b %-d %Y")
+        return f"{then:%b} {then.day}"
+    return f"{then:%b} {then.day} {then:%Y}"
 
 
 def day_bucket(ts: float | None) -> str:

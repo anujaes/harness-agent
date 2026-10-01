@@ -23,7 +23,8 @@ def test_tool_titles_and_args():
 
 def test_short_path_relativizes_cwd_and_home():
     cwd = pathlib.Path.cwd()
-    assert tf.short_path(str(cwd / "pkg" / "mod.py")) == "pkg/mod.py"
+    # Native separators are fine (``pkg\mod.py`` on Windows).
+    assert tf.short_path(str(cwd / "pkg" / "mod.py")).replace("\\", "/") == "pkg/mod.py"
     assert tf.short_path("relative/x.py") == "relative/x.py"
 
 
