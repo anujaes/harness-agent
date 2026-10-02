@@ -11,12 +11,12 @@ from ..constants import (
     PROVIDER_ANTHROPIC_API,
     PROVIDER_ANTHROPIC_AUTH,
     PROVIDER_HARNESS_AGENT,
-    PROVIDER_KIMCHI,
     PROVIDER_OPENAI_CODEX,
     PROVIDER_OPENAI_CODEX_AUTH,
     PROVIDER_OPENCODE_ZEN,
     model_option_id,
     parse_model_option_id,
+    provider_label,
 )
 from .. import state
 from ..storage.sessions import db_count_sessions, db_list_sessions
@@ -37,8 +37,6 @@ def _model_is_active(source: str, model_id: str) -> bool:
         return state.provider == PROVIDER_ANTHROPIC and state.auth_mode == AUTH_API_KEY
     if source == PROVIDER_OPENAI_CODEX_AUTH:
         return state.provider == PROVIDER_OPENAI_CODEX and state.auth_mode == AUTH_OAUTH
-    if source == PROVIDER_KIMCHI:
-        return state.provider == PROVIDER_KIMCHI
     return state.provider == source
 
 
@@ -69,14 +67,30 @@ def list_sessions(*, limit: int = 50, offset: int = 0) -> dict[str, Any]:
 
 
 def list_models(*, query: str = "") -> dict[str, Any]:
+    # Tags shared with the terminal /model picker (constants/providers.py).
+    from ..constants.providers import (
+        VISION_SEARCH_WORDS, free_model_ids, model_is_free, model_sees_images,
+    )
+
     q = (query or "").strip().lower()
+    vision_only = q in VISION_SEARCH_WORDS
+    free_only = q == "free"
+    free_ids = free_model_ids()
     models: list[dict[str, Any]] = []
     for src, model_id, desc in model_picker_rows():
-        label = MODEL_SOURCE_LABELS.get(src, src)
+        label = MODEL_SOURCE_LABELS.get(src) or provider_label(src)
         if src == PROVIDER_HARNESS_AGENT:
             label = "Harness Agent"
-        if q and q not in model_id.lower() and q not in desc.lower() and q not in label.lower():
-            if q not in ("harness", "agent", "free"):
+        images = model_sees_images(model_id, src)
+        free = model_is_free(model_id, src, free_ids)
+        if vision_only:
+            if not images:
+                continue
+        elif free_only:
+            if not free:
+                continue
+        elif q and q not in model_id.lower() and q not in desc.lower() and q not in label.lower():
+            if q not in ("harness", "agent"):
                 continue
         models.append({
             "id": model_option_id(src, model_id),
@@ -85,6 +99,8 @@ def list_models(*, query: str = "") -> dict[str, Any]:
             "model_id": model_id,
             "description": desc,
             "active": _model_is_active(src, model_id),
+            "images": images,
+            "free": free,
         })
     return {
         "models": models,
@@ -99,6 +115,7 @@ def list_models(*, query: str = "") -> dict[str, Any]:
 
 def list_agents(*, include_global: bool | None = None) -> dict[str, Any]:
     from ..storage import agents as ag
+    from ..utils.origins import other_tools, tool_label
 
     if include_global is None:
         include_global = state.global_agents
@@ -107,12 +124,16 @@ def list_agents(*, include_global: bool | None = None) -> dict[str, Any]:
     agents = []
     for rec in sorted(agents_raw, key=lambda r: (r.get("scope") != "project", r.get("name", ""))):
         name = rec.get("name") or ""
+        tool = rec.get("tool") or "jarvis"
         agents.append({
             "name": name,
             "description": rec.get("description") or "",
             "icon": rec.get("icon") or "",
             "scope": rec.get("scope") or "project",
             "source_tag": rec.get("source_tag") or "",
+            "tool": tool,                       # claude, cursor … (utils/origins.py)
+            "tool_label": tool_label(tool),
+            "also_labels": [tool_label(t) for t in other_tools(tool, rec.get("also") or ())],
             "active": name == active,
         })
     hidden = ag.global_count() if not include_global else 0

@@ -315,6 +315,7 @@ On first launch, you'll pick how to authenticate:
 | `HARNESS_HTTP_CONNECT_TIMEOUT` | Connection timeout (s)                 | `30`                               |
 | `HARNESS_STREAM_REPLY`         | Set to `0` to disable live streaming   | `1`                                |
 | `HARNESS_SHELL`                | Windows only: shell for `run_bash` — `bash`, `powershell` or `cmd` | Git Bash if installed, else PowerShell |
+| `HARNESS_MODELS_DEV`           | Set to `0` to turn off the models.dev provider/model catalog | `1`              |
 
 
 ---
@@ -523,6 +524,7 @@ harness/
 - **Credentials** — All config, keys, and history live under `~/.config/claude-agent/`.
 - **Tool selection is dynamic** — Harness only sends the schemas for tools it thinks you'll need, keeping context lean. Core file/code tools are always included; desktop-control (macOS / Windows), web, OCR tools are loaded on demand.
 - **Project context** — Drop a `JARVIS.md` (or `CLAUDE.md`) in your project root, and the agent reads it automatically for project-specific instructions.
+- **Providers and models** — The provider list and model details (context, price, tool support) come from [models.dev](https://models.dev), an open database by the OpenCode team (MIT licence, © models.dev). It's fetched in the background and cached; an unchanged list costs one tiny request.
 
 ---
 

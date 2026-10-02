@@ -21,7 +21,6 @@ const PROVIDER_LABELS = {
   opencode: 'OpenCode Go',
   opencode_zen: 'OpenCode Zen',
   openai_codex: 'ChatGPT (Codex)',
-  kimchi: 'Kimchi',
 };
 /** Filled from /api/providers: "Claude Pro / Max" rather than "Anthropic". */
 let activeProviderLabel = '';
@@ -239,6 +238,7 @@ export function initSidebar({ onOpenPicker }) {
   $('providers-card')?.addEventListener('click', () => { closeOnNarrow(); openPicker('provider'); });
   $('all-sessions')?.addEventListener('click', () => { closeOnNarrow(); openPicker('session'); });
   $('open-skills')?.addEventListener('click', () => { closeOnNarrow(); openPicker('skill'); });
+  $('open-commands')?.addEventListener('click', () => { closeOnNarrow(); openPicker('command'); });
   $('open-mcp')?.addEventListener('click', () => { closeOnNarrow(); openPicker('mcp'); });
   $('theme-btn')?.addEventListener('click', toggleTheme);
   $('appearance-btn')?.addEventListener('click', () => { closeOnNarrow(); openAppearance(); });

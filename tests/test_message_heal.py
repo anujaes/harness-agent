@@ -1,6 +1,7 @@
 """Tests for tool_use/tool_result history repair before OpenCode/DeepSeek calls."""
 import copy
 import json
+import os
 import sqlite3
 import unittest
 from pathlib import Path
@@ -92,19 +93,27 @@ class MessageHealTests(unittest.TestCase):
         )
 
     def test_session_1706_shape_heals(self):
-        db = Path.home() / ".config/harness-agent/sessions.db"
+        # A regression check against a session in the developer's own history.
+        # Tests run with a throwaway HOME (conftest), so read the real one —
+        # read-only, it is never written to.
+        home = Path(os.environ.get("JARVIS_REAL_HOME") or Path.home())
+        db = home / ".config/harness-agent/sessions.db"
         if not db.exists():
             self.skipTest("no local sessions.db")
-        conn = sqlite3.connect(db)
+        # as_uri() gives file:///C:/… on Windows; a raw "file:C:\…" is not a valid URI.
+        conn = None
         try:
+            conn = sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)
             rows = conn.execute(
                 "SELECT role, content_json FROM messages WHERE session_id=? ORDER BY idx",
                 (1706,),
             ).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.Error:
             self.skipTest("local sessions.db has no messages table")
         finally:
-            conn.close()
+            # An open handle keeps the file locked on Windows.
+            if conn is not None:
+                conn.close()
         if not rows:
             self.skipTest("session 1706 missing")
         msgs = [{"role": r[0], "content": json.loads(r[1])} for r in rows]

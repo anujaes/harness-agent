@@ -10,8 +10,10 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
+import time
 from typing import NamedTuple
 
 from rich.markup import escape
@@ -24,6 +26,132 @@ from .. import file_changes, state
 IS_WINDOWS = osinfo.IS_WINDOWS
 
 _bash_lock = threading.Lock()
+
+# How often a running command checks whether its turn was stopped (Esc / web
+# Stop / New chat). Short enough to feel instant, long enough to cost nothing.
+_CANCEL_POLL = 0.2
+
+CANCELLED_RESULT = "CANCELLED: the command was stopped because the turn was interrupted"
+
+
+class _Cancelled(Exception):
+    """The turn running this command was cancelled; the command is stopped."""
+
+
+def _descendants(root: int) -> list[int]:
+    """Every process started (directly or not) by ``root``, via ``ps``."""
+    try:
+        out = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid="], capture_output=True, text=True, timeout=3,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    children: dict[int, list[int]] = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            children.setdefault(int(parts[1]), []).append(int(parts[0]))
+    found: list[int] = []
+    stack = [root]
+    while stack:
+        for child in children.get(stack.pop(), []):
+            if child not in found:
+                found.append(child)
+                stack.append(child)
+    return found
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Stop ``proc`` and everything it started: TERM, a moment, then KILL.
+
+    The shell (``sh -c …``) is rarely the process doing the work; killing only
+    it would leave e.g. ``pytest`` running with the output pipes open.
+    Children are collected first — once the shell dies they're reparented
+    and can't be found from it any more.
+    """
+    pids = _descendants(proc.pid) if os.name == "posix" else []
+    for sig in (signal.SIGTERM, getattr(signal, "SIGKILL", signal.SIGTERM)):
+        for pid in pids:
+            try:
+                os.kill(pid, sig)
+            except OSError:
+                pass
+        try:
+            proc.send_signal(sig)
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=1.0)
+            if sig == signal.SIGTERM and not any(_pid_alive(p) for p in pids):
+                return
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _drain(proc: subprocess.Popen) -> tuple[str, str]:
+    try:
+        out, err = proc.communicate(timeout=2)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        return "", ""
+    return out or "", err or ""
+
+
+def _run_process(cmd: str, timeout: int, env: dict) -> tuple[int, str, str]:
+    """Run ``cmd`` like ``subprocess.run(shell=True, capture_output=True)``,
+    but stop it as soon as the turn is cancelled.
+
+    Raises ``subprocess.TimeoutExpired`` on timeout and ``_Cancelled`` on a
+    cancelled turn — in both cases after the whole process tree is gone, so
+    the shell lock is never held by a command nobody is waiting for.
+
+    On Windows the command runs in the configured shell (Git Bash /
+    PowerShell / cmd, see :func:`_execute`) inside a Job Object instead:
+    ``shell=True`` would always mean cmd.exe there, and ``_kill_tree`` needs
+    ``ps``, which Windows doesn't have.
+    """
+    if IS_WINDOWS:
+        return tuple(_execute(cmd, timeout, env=env, cancellable=True))
+    proc = subprocess.Popen(
+        cmd,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        cwd=str(CWD),
+        env=env,
+    )
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                # Repeated communicate() calls never lose output.
+                out, err = proc.communicate(timeout=_CANCEL_POLL)
+                return proc.returncode, out or "", err or ""
+            except subprocess.TimeoutExpired:
+                pass
+            if state.turn_cancelled():
+                _kill_tree(proc)
+                _drain(proc)
+                raise _Cancelled()
+            if time.monotonic() >= deadline:
+                _kill_tree(proc)
+                _drain(proc)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+    except BaseException:
+        # KeyboardInterrupt injected by Esc, or anything else: never leave the
+        # command running behind us.
+        if proc.poll() is None:
+            _kill_tree(proc)
+            _drain(proc)
+        raise
 
 # Read-only agent tools (search_code, git_status, …) must not block on approval.
 _SAFE_READONLY = re.compile(
@@ -393,10 +521,29 @@ class Result(NamedTuple):
     stderr: str
 
 
+def _reap(proc: subprocess.Popen) -> None:
+    """Collect a killed process's leftover output so its pipes close."""
+    try:
+        proc.communicate(timeout=5)
+    except (subprocess.TimeoutExpired, ValueError, OSError):
+        # Something that escaped the tree still holds the pipes.
+        for pipe in (proc.stdout, proc.stderr):
+            try:
+                pipe.close()
+            except (OSError, AttributeError):
+                pass
+
+
 def run_process(args: list[str] | str, *, timeout: float, shell: bool = False,
-                env: dict | None = None, cwd: str | None = None) -> Result:
+                env: dict | None = None, cwd: str | None = None,
+                cancellable: bool = False) -> Result:
     """Run ``args`` capturing text output; on timeout kill its whole tree and
-    re-raise :class:`subprocess.TimeoutExpired`."""
+    re-raise :class:`subprocess.TimeoutExpired`.
+
+    With ``cancellable`` the run also watches the current turn: once it is
+    cancelled (Esc / web Stop / New chat) the whole tree is killed and
+    :class:`_Cancelled` is raised, like :func:`_run_process` does on POSIX.
+    """
     if IS_WINDOWS and isinstance(args, list) and args and args[0].lower().endswith(_BATCH_SUFFIXES):
         raise OSError(f"refusing to run a batch file with an argument list: {args[0]}")
     popen_args = windows_cmdline(args) if IS_WINDOWS and isinstance(args, list) else args
@@ -406,29 +553,46 @@ def run_process(args: list[str] | str, *, timeout: float, shell: bool = False,
     )
     tree = ProcessTree(proc)
     try:
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            tree.kill()
+        if not cancellable:
             try:
-                proc.communicate(timeout=5)
+                out, err = proc.communicate(timeout=timeout)
             except subprocess.TimeoutExpired:
-                # Something that escaped the tree still holds the pipes.
-                for pipe in (proc.stdout, proc.stderr):
-                    try:
-                        pipe.close()
-                    except OSError:
-                        pass
+                tree.kill()
+                _reap(proc)
+                raise
+            return Result(proc.returncode, decode_output(out), decode_output(err))
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    # Repeated communicate() calls never lose output.
+                    out, err = proc.communicate(timeout=_CANCEL_POLL)
+                    return Result(proc.returncode, decode_output(out), decode_output(err))
+                except subprocess.TimeoutExpired:
+                    pass
+                if state.turn_cancelled():
+                    tree.kill()
+                    _reap(proc)
+                    raise _Cancelled()
+                if time.monotonic() >= deadline:
+                    tree.kill()
+                    _reap(proc)
+                    raise subprocess.TimeoutExpired(popen_args, timeout)
+        except BaseException:
+            # KeyboardInterrupt injected by Esc, or anything else: never leave
+            # the command running behind us.
+            if proc.poll() is None:
+                tree.kill()
+                _reap(proc)
             raise
     finally:
         tree.close()
-    return Result(proc.returncode, decode_output(out), decode_output(err))
 
 
-def _execute(cmd: str, timeout: float) -> Result:
-    """Run ``cmd`` in the configured shell."""
+def _execute(cmd: str, timeout: float, *, env: dict | None = None, cancellable: bool = False) -> Result:
+    """Run ``cmd`` in the configured shell (see :func:`run_process`)."""
     args = osinfo.shell_argv(cmd)
-    return run_process(args, timeout=timeout, shell=isinstance(args, str))
+    return run_process(args, timeout=timeout, shell=isinstance(args, str), env=env, cancellable=cancellable)
 
 
 def which(name: str) -> str | None:
@@ -494,11 +658,13 @@ def run_bash(cmd: str, timeout: int = DEFAULT_BASH_TIMEOUT) -> str:
             # the web Changes panel (nothing is recorded if nothing changed).
             settle_changes = file_changes.watch_shell(cmd)
             try:
-                r = _execute(cmd, timeout=timeout)
+                code, stdout, stderr = _run_process(cmd, timeout, osinfo.shell_env())
             finally:
                 settle_changes()
-            return _format(cmd, r)
+            return _format(cmd, Result(code, stdout, stderr))
         except subprocess.TimeoutExpired:
             return f"TIMEOUT after {timeout}s"
+        except _Cancelled:
+            return CANCELLED_RESULT
         except OSError as e:
             return f"$ {cmd}\nexit=127\n[stderr]\ncould not start the shell: {e}"

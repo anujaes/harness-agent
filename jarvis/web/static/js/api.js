@@ -248,7 +248,9 @@ export function transportMode() {
   return mode;
 }
 
-export const sendPrompt = (text) => api('/api/prompt', 'POST', { text });
+/** `attachments`: ids of files already uploaded (media.js) — the server checks they still exist. */
+export const sendPrompt = (text, attachments = []) =>
+  api('/api/prompt', 'POST', attachments.length ? { text, attachments } : { text });
 export const cancelTurn = () => api('/api/cancel', 'POST', {});
 /** Fix spelling / grammar with the current model → `{ ok, text, changed }` or `{ ok: false, error }`. */
 export const enhancePrompt = (text) => api('/api/enhance', 'POST', { text });
@@ -295,6 +297,9 @@ export function fetchSkills(includeGlobal, q = '') {
 }
 
 export const fetchSkill = (name) => api(`/api/skills/${encodeURIComponent(name)}`);
+
+/** Custom slash commands (`/api/commands`): the slash menu, palette and /command dialog. */
+export const fetchCommands = () => api('/api/commands');
 
 export function fetchMcpServers(q = '') {
   return api(`/api/mcp${q ? `?q=${encodeURIComponent(q)}` : ''}`);

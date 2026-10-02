@@ -100,6 +100,18 @@ def test_windows_key_table_keeps_the_columns_aligned():
     assert out[4] == "  • a tip line here"
 
 
+@pytest.mark.parametrize("windows, expected", [(True, "Shift+Enter newline"), (False, "⇧↵ newline")])
+def test_welcome_hints_spell_keys_for_the_os(monkeypatch, windows, expected):
+    """The welcome block's key row (``⇧↵ newline``) reads ``Shift+Enter`` on Windows."""
+    from jarvis.tui.transcript import WelcomeBlock
+
+    monkeypatch.setattr(keys, "IS_WINDOWS", windows)
+    text = WelcomeBlock({"version": "0", "cwd": "C:/x"}).render().plain
+    assert expected in text
+    if windows:
+        assert "⇧" not in text
+
+
 def test_key_label_is_a_no_op_off_windows(monkeypatch):
     monkeypatch.setattr(keys, "IS_WINDOWS", False)
     assert keys.key_label("⌃G") == "⌃G" and keys.key_table("  ⌃C             quit") == "  ⌃C             quit"

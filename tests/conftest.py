@@ -1,29 +1,29 @@
 """Shared test isolation."""
+import atexit
 import os
 import shutil
 import tempfile
 
 import pytest
 
-# Point the home directory at a scratch folder BEFORE any jarvis module is
-# imported: jarvis.constants.paths resolves ~/.config/harness-agent and
-# ~/.harness at import time, and many tests save sessions, settings, the
-# provider choice … through those constants. Without this the suite writes
-# into the developer's real Jarvis config (and a first launch afterwards finds
-# a provider the tests picked). HOME covers POSIX; USERPROFILE is what
-# Path.home() reads on Windows.
-_REAL_HOME = os.path.expanduser("~")
-_TEST_HOME = tempfile.mkdtemp(prefix="jarvis-test-home-")
-os.environ["HOME"] = _TEST_HOME
-os.environ["USERPROFILE"] = _TEST_HOME
+# Tests must never touch the developer's real Jarvis config. A plain `pytest`
+# (or `!pytest` inside Jarvis) used to rewrite ~/.config/harness-agent —
+# settings.json, provider, auth_mode, history.json, sessions.db — so the saved
+# provider/model flipped to whatever the last test set. Paths are computed when
+# jarvis is imported, so HOME is pointed at a throwaway directory here, before
+# any test module imports it. The real home stays readable via JARVIS_REAL_HOME
+# (tests that only *read* local data). Opt out: JARVIS_TESTS_REAL_HOME=1.
+# HOME covers POSIX; USERPROFILE is what Path.home() reads on Windows.
+if os.environ.get("JARVIS_TESTS_REAL_HOME") != "1" and "JARVIS_REAL_HOME" not in os.environ:
+    os.environ["JARVIS_REAL_HOME"] = os.path.expanduser("~")
+    _test_home = tempfile.mkdtemp(prefix="jarvis-test-home-")
+    os.environ["HOME"] = _test_home
+    os.environ["USERPROFILE"] = _test_home
+    atexit.register(shutil.rmtree, _test_home, True)
 # git reads its global identity from the (now empty) home; tests that commit need one.
 for _var, _val in (("GIT_AUTHOR_NAME", "Jarvis Tests"), ("GIT_AUTHOR_EMAIL", "tests@example.invalid"),
                    ("GIT_COMMITTER_NAME", "Jarvis Tests"), ("GIT_COMMITTER_EMAIL", "tests@example.invalid")):
     os.environ.setdefault(_var, _val)
-
-
-def pytest_unconfigure(config):
-    shutil.rmtree(_TEST_HOME, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +43,36 @@ def _isolated_pet(tmp_path, monkeypatch):
     pet_model.reset_cache()
     pet_pkg.set_reaction_hook(None)
     pet_pkg.set_action_hook(None)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_models_dev(tmp_path, monkeypatch):
+    """The models.dev catalog (``jarvis/auth/models_dev.py``) adds a provider
+    for every key in the environment. Without this, a developer's real cache
+    plus an OPENAI_API_KEY in their shell would change what every picker test
+    sees. Each test starts with an empty catalog, its own keys file and no
+    network; tests that need a catalog seed one with ``models_dev.store``."""
+    from jarvis.auth import models_dev
+    from jarvis.constants import paths
+
+    monkeypatch.setattr(models_dev, "CACHE_FILE", tmp_path / "models_dev.json")
+    monkeypatch.setattr(paths, "PROVIDER_KEYS_FILE", tmp_path / "provider_keys.json")
+
+    def _offline(*_a, **_k):
+        raise OSError("network disabled in tests (models.dev)")
+
+    monkeypatch.setattr(models_dev, "_http_get", _offline)
+    # OpenCode Go / Zen "served now" lists (auth/opencode_catalog.py): offline
+    # too, and empty unless a test seeds them.
+    from jarvis.auth import opencode_catalog
+
+    monkeypatch.setattr(opencode_catalog, "_fetch", lambda *_a, **_k: None)
+    monkeypatch.setattr(opencode_catalog, "served_ids", lambda provider: set())
+    models_dev._memo.update(mtime=None, path=None, providers={}, native={}, meta={})
+    models_dev._memo.pop("shared", None)
+    yield
+    models_dev._memo.update(mtime=None, path=None, providers={}, native={}, meta={})
+    models_dev._memo.pop("shared", None)
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +160,49 @@ def owner_only():
         )
 
     return check
+
+
+@pytest.fixture()
+def owner_only_dir():
+    """``owner_only_dir(path)`` -> True when only the current user can open the
+    folder ``path`` *and* whatever is created in it.
+
+    POSIX: mode 700. Windows: nothing inherited from the parent folder, a
+    grant to the current user that new files and subfolders inherit
+    (``(OI)(CI)``), and no other principal except SYSTEM / Administrators /
+    OWNER RIGHTS — the Windows reading of 700 that CPython's own
+    ``mkdir(mode=0o700)`` uses (root can read a 700 folder on POSIX too).
+    """
+    import os
+    import stat
+    import subprocess
+    import sys
+
+    def check(path) -> bool:
+        if sys.platform != "win32":
+            return stat.S_IMODE(os.stat(path).st_mode) == 0o700
+        out = subprocess.run(["icacls", str(path)], capture_output=True, text=True, check=True).stdout
+        body = out.replace(str(path), "", 1)
+        aces = [line.strip() for line in body.splitlines() if ":(" in line]
+        from jarvis.utils.io import current_user_sid
+
+        mine = {os.environ.get("USERNAME", "").lower(), f"*{(current_user_sid() or '').lower()}"}
+        # Built-in principals a private Windows folder may keep (names, or SIDs when unnamed).
+        allowed = {"system", "administrators", "owner rights", "*s-1-5-18", "*s-1-5-32-544", "*s-1-3-4"}
+        user_ok = False
+        for ace in aces:
+            principal, _, rights = ace.partition(":")
+            name = principal.lower().split("\\")[-1]
+            if "(I)" in rights:
+                return False  # still relying on the parent folder's ACL
+            if name in mine:
+                user_ok = "(OI)" in rights and "(CI)" in rights and "(F)" in rights
+            elif name not in allowed:
+                return False
+        return user_ok
+
+    return check
+
 
 @pytest.fixture()
 def fake_program(tmp_path):

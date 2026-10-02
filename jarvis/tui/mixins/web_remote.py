@@ -1,7 +1,7 @@
 """Web-remote bridge wiring for the Jarvis TUI.
 
 Owns everything behind ``jarvis --web``: starting the bridge/mux/server,
-rendering the web bar, and routing submits/cancels/settings/actions that
+the corner QR and the footer's remote item, and routing submits/cancels/settings/actions that
 arrive from the browser back into the normal turn loop.
 
 Mixed into ``JarvisTUI``; all ``self.*`` references resolve on the composed
@@ -16,7 +16,7 @@ from rich.markup import escape as _rich_escape
 
 from ..console_shim import TUIConsole
 from ..console_swap import _swap_console_everywhere
-from ..web_bar import WebRemoteBar, WebRemoteQR
+from ..web_bar import WebRemoteQR
 from ..app_commands import (
     _is_bare_model_command,
     _is_provider_hub_command,
@@ -45,7 +45,9 @@ class WebRemoteMixin:
 
         bridge = WebBridge()
         bridge.set_handlers(
-            on_submit=lambda text: self.call_from_thread(lambda: self._handle_web_submit(text)),
+            on_submit=lambda text, files=None: self.call_from_thread(
+                lambda: self._handle_web_submit(text, files)
+            ),
             on_cancel=lambda: self.call_from_thread(self._handle_web_cancel),
             on_settings=lambda data, done: self.call_from_thread(
                 lambda: self._complete_web_settings(data, done)
@@ -183,6 +185,7 @@ class WebRemoteMixin:
 
         if isinstance(self.screen, WebConnectScreen):
             self.screen._paint()
+        self._render_footer()
 
     def _stop_tunnel(self, *, quiet: bool = False) -> None:
         tunnel = getattr(self, "_web_tunnel", None)
@@ -190,6 +193,7 @@ class WebRemoteMixin:
         self._web_public_link = ""
         if self._web_bridge is not None:
             self._web_bridge.public_host = ""
+        self._render_footer()
         if tunnel is None:
             return
         threading.Thread(target=tunnel.stop, daemon=True, name="tunnel-stop").start()
@@ -265,14 +269,6 @@ class WebRemoteMixin:
         self._set_web_qr_wanted(False)
         self.notify("QR hidden — /web qr shows it any time", timeout=2.5)
 
-    def action_open_web_url(self) -> None:
-        url = self._web_primary_url
-        if not url:
-            return
-        import webbrowser
-
-        threading.Thread(target=webbrowser.open, args=(url,), daemon=True).start()
-
     def action_web_connect(self) -> None:
         self._open_web_modal()
 
@@ -308,12 +304,61 @@ class WebRemoteMixin:
         if started_now:
             self._set_status("web remote on")
 
+    def _web_local_url(self) -> str:
+        """The loopback link (token included) — the one for this computer's browser."""
+        for url in self._web_urls or []:
+            if "127.0.0.1" in url or "localhost" in url:
+                return url
+        return self._web_primary_url
+
+    def action_open_web_browser(self) -> None:
+        """Composer 🌐 button: start the remote if needed, open it in the browser here."""
+        started_now = False
+        if self._web_bridge is None:
+            if not self._start_web_remote(self._tui_console):
+                return
+            started_now = True
+        url = self._web_local_url()
+        if not url:
+            return
+        if started_now:
+            esc = _rich_escape(url)
+            self._tui_console.print(
+                f"[{ui.FG_DIM}]🌐 web remote on[/]  [link={esc}]{esc}[/link]  "
+                f"[{ui.FG_DIM}]· opened in your browser[/]"
+            )
+
+        def failed() -> None:
+            copied = self._copy_web_url(show_status=False)
+            self.notify(
+                "Couldn't open a browser — link copied, paste it into one"
+                if copied else "Couldn't open a browser — /web shows the link",
+                severity="warning", timeout=5,
+            )
+
+        def open_it() -> None:
+            import webbrowser
+
+            try:
+                ok = bool(webbrowser.open(url))
+            except Exception:
+                ok = False
+            if not ok:
+                self._on_ui_thread(failed)
+
+        # webbrowser.open can block for a moment (it runs `open` / xdg-open).
+        threading.Thread(target=open_it, daemon=True, name="jarvis-web-open").start()
+        if not started_now:  # the first time, the transcript notice says it
+            self._set_status("🌐 opening the web remote in your browser")
+
     def _handle_web_command(self, text: str) -> None:
-        """``/web`` · ``/web qr`` · ``/web show|hide`` · ``/web copy`` · ``/web stop``."""
+        """``/web`` · ``/web qr`` · ``/web open`` · ``/web show|hide`` · ``/web copy`` · ``/web stop``."""
         parts = (text or "").strip().split()
         sub = parts[1].lower() if len(parts) > 1 else ""
         running = self._web_bridge is not None
-        if sub in ("", "qr", "open", "start", "on", "link", "url"):
+        if sub in ("open", "browser"):
+            self.action_open_web_browser()
+        elif sub in ("", "qr", "start", "on", "link", "url"):
             self._open_web_modal()
         elif sub in ("anywhere", "tunnel", "public", "remote", "internet"):
             if self._start_tunnel() == "error":
@@ -345,30 +390,56 @@ class WebRemoteMixin:
         else:
             self._tui_console.print(
                 f"[{ui.FG_DIM}]/web · /web qr — QR + link (starts the remote)  ·  "
-                f"/web anywhere — public link for any network · /web local  ·  "
+                f"/web open — open it in this computer's browser  ·  /web anywhere — public link for any network · /web local  ·  "
                 f"/web hide · /web show — corner QR  ·  /web copy  ·  /web stop[/]"
             )
 
-    def _render_web_bar(self) -> None:
+    def _web_footer_markup(self) -> tuple[str, str] | None:
+        """Footer item while the remote runs: ``(full, short)`` markup.
+
+        Full: where it listens (host:port — the token stays out of the
+        always-on footer) + who's on it; short: just ``🌐 web``. Click opens
+        the QR + link dialog, ⌃⇧U copies the full link.
+        """
+        url = self._web_primary_url
+        if not url:
+            return None
+        from urllib.parse import urlparse
+
+        if getattr(self, "_web_public_link", ""):
+            icon, where, short = "🌍", "anywhere", "anywhere"
+        else:
+            icon, where, short = "🌐", urlparse(url).netloc or url, "web"
+        bridge = self._web_bridge
         try:
-            bar = self.query_one("#webar", WebRemoteBar)
+            n = bridge.subscriber_count() if bridge is not None else 0
         except Exception:
-            bar = None
+            n = 0
+        live = f" [{ui.FG_DIM}]·[/] [{ui.OK}]{n} connected[/]" if n else ""
+        head = f"[{ui.ACCENT}]{icon}[/] "
+        return (
+            f"{head}[{ui.FG_MUTE}]{_rich_escape(where)}[/]{live}",
+            f"{head}[{ui.FG_MUTE}]{short}[/]{live}",
+        )
+
+    def _render_web_bar(self) -> None:
+        """Sync the corner QR, the composer's 🌐 button and the footer item with the remote's state."""
+        from ..web_button import WebButton
+
+        try:
+            self.query_one("#web_button", WebButton).set_live(bool(self._web_primary_url))
+        except Exception:
+            pass
         try:
             qr = self.query_one("#web_qr_overlay", WebRemoteQR)
         except Exception:
             qr = None
-        if self._web_primary_url:
-            wanted = self._web_qr_wanted()
-            bar and bar.set_url(self._web_primary_url, qr_shown=wanted)
-            if qr:
-                if wanted:
-                    qr.set_url(self._web_primary_url)
-                else:
-                    qr.hide()
-        else:
-            bar and bar.hide_bar()
-            qr and qr.hide()
+        if qr:
+            if self._web_primary_url and self._web_qr_wanted():
+                qr.set_url(self._web_primary_url)
+            else:
+                qr.hide()
+        self._render_footer()
 
     def _copy_web_url(self, *, show_status: bool = True) -> bool:
         # The Anywhere link while it's live — that's the one worth sharing to a phone.
@@ -393,24 +464,25 @@ class WebRemoteMixin:
         bridge = self._web_bridge
         if bridge is None:
             return
-        items: list[str] = []
-        for msg in state.prompt_queue:
-            if isinstance(msg, tuple):
-                items.append(str(msg[0]).strip())
-            else:
-                items.append(str(msg).strip())
+        from ...media import queue_label
+
+        items = [queue_label(msg) for msg in state.prompt_queue]
         bridge.emit("queue", {"items": [i for i in items if i]})
 
-    def _handle_web_submit(self, text: str) -> None:
+    def _handle_web_submit(self, text: str, files: list[str] | None = None) -> None:
         text = (text or "").strip()
-        if not text:
+        files = list(files or [])
+        if not text and not files:
             return
         # Before the busy check, same as the composer: queued, it would reach
         # the slash dispatcher as "unknown: /loop".
-        if self._try_loop_command(text):
+        if not files and self._try_loop_command(text):
             return
         if self._busy:
-            self._stash_prompt(text)
+            self._stash_prompt(text, files=files)
+            return
+        if files:  # web attachments (the handler refuses them on commands)
+            self._begin_turn(text, attachments=files)
             return
         if self._is_web_modal_command(text):
             if self._web_bridge is not None:
@@ -495,6 +567,13 @@ class WebRemoteMixin:
 
         mux = getattr(self, "_web_mux", None)
         ctx = mux.suppress_broadcast() if mux is not None else nullcontext()
+        # New chat / another session while a turn runs: stop the turn first,
+        # outside the suppress block so pages get its stream_end + busy=false.
+        # (Left running, it kept "thinking" into the new chat, wrote its reply
+        # there and made every new prompt queue behind it.)
+        stopped = ""
+        if action in ("session_resume", "session_new"):
+            stopped = self._stop_turn_for_session_change()
         with ctx:
             result = run_web_action(action, data, console_print=self._tui_console.print)
             if not result.get("ok"):
@@ -514,6 +593,10 @@ class WebRemoteMixin:
                     except Exception as exc:
                         result = dict(result)
                         result["render_warning"] = str(exc)
+                if stopped:
+                    result = dict(result)
+                    result["stopped"] = stopped
+                    self._tui_console.print(f"[{ui.FG_DIM}]⏹ web · {stopped}[/]")
 
             provider_change = action.startswith("provider_")
             if action == "model_select" or provider_change:

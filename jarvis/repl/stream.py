@@ -27,7 +27,11 @@ except ImportError:  # pragma: no cover
 from ..console import console, APIStatusError, RateLimitError, HarnessAPIError
 from ..tools.router import select_tools
 from ..constants.models import API_MAX_TOKENS, THINKING_BUDGET_TOKENS
-from ..constants.providers import model_supports_images
+from anthropic import Anthropic
+from ..constants.providers import (
+    claude_thinking_kwargs, claude_uses_adaptive_thinking, is_catalog_provider, model_supports_images,
+    provider_label,
+)
 from ..constants import (
     PROVIDER_ANTHROPIC, PROVIDER_OPENCODE, PROVIDER_OPENCODE_ZEN, PROVIDER_OPENAI_CODEX,
     PROVIDER_OPENROUTER, OPENROUTER_DEFAULT_MODEL,
@@ -37,6 +41,7 @@ from ..auth.codex_oauth_tokens import load_codex_oauth_tokens, codex_oauth_refre
 from ..auth.client import _build_client_from_mode
 from .. import state
 from .system import build_system
+from ..media import materialize_uploads
 from .trim import anthropic_wire_messages, prune_tool_images, trim_messages
 from .render import assistant_model_label
 from .stream_display import RichAssistantStreamDisplay
@@ -95,13 +100,18 @@ def _raise_in_thread(tid: int, exc_type) -> bool:
         return False
 
 
-def cancel_current_stream():
+def cancel_current_stream(thread_id: int | None = None):
     """Cancel the current turn from any thread.
 
     Sets the persistent cancel flag so every phase (tool execution, next stream
     start, render_assistant) knows to abort. Also closes the active stream and
     injects KeyboardInterrupt into the worker thread for immediate unblocking.
     Safe to call from any thread, including the TUI event loop.
+
+    ``thread_id`` is the turn's worker (the TUI knows it). Without one, only a
+    thread that is inside ``call_claude_stream`` right now is interrupted —
+    never the id of a worker that already finished: Python reuses thread ids,
+    so that could hit an unrelated thread (the web server, the sync watcher).
     """
     from .. import state as _state
     _state.cancel_requested.set()
@@ -121,7 +131,9 @@ def cancel_current_stream():
             s.close()
         except Exception:
             pass
-    _raise_in_thread(_worker_thread_id, KeyboardInterrupt)
+    target = thread_id or _worker_thread_id
+    if target:
+        _raise_in_thread(target, KeyboardInterrupt)
     return True
 
 
@@ -296,6 +308,36 @@ def _stop_on_rate_limit(detail: str = "") -> None:
     console.print(
         "[yellow]Wait and try again later, or switch models with /model.[/]"
     )
+
+
+def _report_catalog_error(code: int, err: Exception) -> None:
+    """A provider from models.dev refused the request: say what to do, stop."""
+    from rich.markup import escape
+
+    name = provider_label(state.provider)
+    detail = escape(str(err))[:300]
+    if code == 401:
+        msg = (f"[red]Auth error — Provider: {name} (API key)[/]\n"
+               f"[yellow]{name} rejected the key. Replace it with /key — no restart needed.[/]")
+        reason = "auth error"
+    elif code == 402:
+        msg = (f"[red]Payment required — Provider: {name}[/]\n"
+               "[yellow]The account has no credit for this model. Top it up, "
+               "or pick another model with /model.[/]")
+        reason = "payment required"
+    elif code == 403:
+        msg = (f"[red]{name} refused '{escape(state.MODEL)}' for this key.[/]\n"
+               "[yellow]Your plan may not include it — pick another with /model.[/]")
+        reason = "model not permitted"
+    else:
+        msg = (f"[red]{name}: model '{escape(state.MODEL)}' not found.[/]\n"
+               "[yellow]models.dev may list it before the provider serves it — "
+               "pick another with /model, or /model refresh.[/]")
+        reason = "model not found"
+    console.print(msg)
+    if detail:
+        console.print(f"[dim]{detail}[/]")
+    raise HarnessAPIError(reason)
 
 
 def _block_dict(block: Any) -> dict:
@@ -549,6 +591,18 @@ def _heal_orphan_tool_uses() -> None:
 
 
 def call_claude_stream():
+    """Stream one model reply (retries, OAuth refresh, provider fallbacks)."""
+    try:
+        return _call_claude_stream()
+    finally:
+        # Once this thread leaves the stream call it's no target for a bare
+        # cancel_current_stream() any more (its id may soon be reused).
+        global _worker_thread_id
+        if _worker_thread_id == (threading.current_thread().ident or 0):
+            _worker_thread_id = 0
+
+
+def _call_claude_stream():
     # Check cancel flag before starting a new stream — allows Escape to
     # prevent the next stream from even starting after tool results.
     if state.turn_cancelled():
@@ -562,9 +616,13 @@ def call_claude_stream():
     tools = select_tools(state.messages)
     if state.show_internal and not getattr(console, "renders_tool_rows", False):
         console.print(f"[dim]tool schemas: {len(tools)} selected[/]")
-    messages = prune_tool_images(trim_messages(state.messages),
-                                 vision=model_supports_images(state.MODEL))
-    if state.provider in (PROVIDER_ANTHROPIC, PROVIDER_OPENROUTER):
+    vision = model_supports_images(state.MODEL)
+    messages = prune_tool_images(trim_messages(state.messages), vision=vision)
+    # Web attachments are references in history; the newest become real images now.
+    messages = materialize_uploads(messages, vision=vision)
+    if state.provider in (PROVIDER_ANTHROPIC, PROVIDER_OPENROUTER) or (
+        is_catalog_provider(state.provider) and isinstance(state.client, Anthropic)
+    ):
         # History may hold another provider's replies (switched mid-session).
         messages = anthropic_wire_messages(messages)
     kwargs: Dict[str, Any] = dict(
@@ -572,7 +630,10 @@ def call_claude_stream():
         messages=messages,
         tools=tools,
     )
-    if state.think_mode:
+    if state.provider == PROVIDER_ANTHROPIC and claude_uses_adaptive_thinking(state.MODEL):
+        # Claude 5: adaptive thinking + effort; budget_tokens is a 400 there.
+        kwargs.update(claude_thinking_kwargs(state.think_mode, state.think_effort))
+    elif state.think_mode:
         kwargs["thinking"] = {
             "type": "enabled",
             "budget_tokens": THINKING_BUDGET_TOKENS,
@@ -647,6 +708,8 @@ def call_claude_stream():
             _stop_on_rate_limit(str(e))
             raise
         except APIStatusError as e:
+            if is_catalog_provider(state.provider) and e.status_code in (401, 402, 403, 404):
+                _report_catalog_error(e.status_code, e)  # Anthropic-style catalog provider
             if e.status_code == 401:
                 if state.provider == "openrouter":
                     console.print(
@@ -820,4 +883,11 @@ def call_claude_stream():
                     "model, or /provider to switch provider.[/]"
                 )
                 raise HarnessAPIError("model not available")
+            code = getattr(e, "status_code", None)
+            if is_catalog_provider(state.provider) and code in (401, 402, 403, 404):
+                _report_catalog_error(code, e)
+            if is_catalog_provider(state.provider) and code is not None and code >= 500 and attempt < len(delays):
+                report_turn_phase(f"Server {code} — retrying soon…")
+                console.print(f"[yellow]server {code}, retry...[/]")
+                time.sleep(delays[attempt]); continue
             raise

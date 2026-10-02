@@ -98,7 +98,9 @@ export function initModals() {
 export function listNav(listEl, onPick) {
   let cursor = 0;
 
-  const rows = () => [...listEl.querySelectorAll('.list-row:not([aria-disabled="true"])')];
+  // Rows inside a closed drawer (the model list's providers) are skipped.
+  const rows = () => [...listEl.querySelectorAll('.list-row:not([aria-disabled="true"])')]
+    .filter((el) => !el.closest('.mdrawer:not(.is-open)'));
 
   function paint(scroll = true) {
     const all = rows();
@@ -156,5 +158,6 @@ export function listNav(listEl, onPick) {
     return false;
   }
 
-  return { reset, move, handleKey, paint, setCursor(i) { cursor = i; paint(); } };
+  /** `scroll: false` moves the cursor without scrolling the list (re-renders that keep the view). */
+  return { reset, move, handleKey, paint, setCursor(i, scroll = true) { cursor = i; paint(scroll); } };
 }

@@ -37,7 +37,7 @@ from .console_shim import TUIConsole
 from .keys import key_label
 from ..repl.tool_output_backfill import backfill_tool_output_history, inspector_has_entries
 from .ask_user import AskUserController, AskQuestion, normalize_questions
-from .web_bar import WebRemoteBar, WebRemoteQR
+from .web_bar import WebRemoteQR
 from . import theme as ui
 from .. import state
 
@@ -95,18 +95,6 @@ def _agent_color() -> str:
     return ui.ACCENT
 
 
-def _pin_status_markup() -> str:
-    """Compact pinned-context indicator."""
-    from ..storage import pin as pin_store
-
-    text = pin_store.pin_text()
-    if not text:
-        return ""
-    if not pin_store.is_enabled():
-        return f"[{ui.WARN}]pin paused[/]"
-    return f"[{ui.FG_DIM}]pinned[/]"
-
-
 def _fmt_tokens(n: int) -> str:
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f}M"
@@ -155,6 +143,7 @@ from .mixins.enhance import EnhanceMixin  # noqa: E402
 from .mixins.mcp_auth import McpAuthMixin  # noqa: E402
 from .mcp_auth_bar import McpAuthBar  # noqa: E402
 from .enhance_button import EnhanceButton  # noqa: E402
+from .web_button import WebButton  # noqa: E402
 from .pet_widget import PetBubble, PetBuddy  # noqa: E402
 from .prompt_history import PromptHistory  # noqa: E402
 from .sidebar import Sidebar  # noqa: E402
@@ -171,7 +160,7 @@ from .transcript import (  # noqa: E402
 )
 
 _SIDEBAR_MIN_WIDTH = 150
-_PLACEHOLDER = key_label("Ask anything…   / commands · @ files · ! shell · ⇧↵ newline")
+_PLACEHOLDER = "Ask anything…"
 _BUSY_PLACEHOLDER = "Type a follow-up — it's queued for when Jarvis finishes · esc interrupts"
 # Shown in place of the default placeholder every few turns.
 _TIPS = tuple(key_label(tip) for tip in (
@@ -184,6 +173,7 @@ _TIPS = tuple(key_label(tip) for tip in (
     "Tip: /model switches models · /theme changes colors",
     "Tip: !git status runs a shell command without the model",
     "Tip: ⌃G (or ✦ enhance) fixes spelling & grammar before you send",
+    "Tip: click 🌐 web (right of the prompt) to open this session in your browser",
 ))
 
 
@@ -246,10 +236,6 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         self._web_primary_url = ""
         self._web_tunnel = None          # "Anywhere" tunnel (jarvis/web/tunnel.py)
         self._web_public_link = ""       # its URL + token, once live
-        # Git branch cache — refreshed every few seconds, not every repaint.
-        self._git_branch: str | None = None
-        self._git_branch_checked_at: float = 0.0
-        self._git_branch_ttl: float = 5.0
         self._file_ref_mention: tuple[int, int, str] | None = None
         self._file_ref_mouse_on = False
         self._file_ref_last_query: str | None = None
@@ -294,27 +280,6 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                 return
         self._ask_user.begin(qs, on_done)
 
-    def _refresh_git_branch(self, *, sync: bool = False) -> None:
-        """Refresh the cached branch (TTL). Runs ``git`` off the UI thread
-        unless ``sync`` — a subprocess per repaint would stutter scrolling."""
-        now = time.monotonic()
-        if (now - self._git_branch_checked_at) < self._git_branch_ttl:
-            return
-        self._git_branch_checked_at = now
-
-        def _probe() -> None:
-            try:
-                from ..repl.banners import _current_git_branch
-                import pathlib as _pl
-                self._git_branch = _current_git_branch(_pl.Path.cwd())
-            except Exception:
-                self._git_branch = None
-
-        if sync:
-            _probe()
-        else:
-            threading.Thread(target=_probe, name="git-branch", daemon=True).start()
-
     async def _on_key(self, event):  # type: ignore[override]
         key = getattr(event, "key", "")
         if self._ask_user.active and self._ask_user.handle_key(key):
@@ -355,7 +320,6 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                 yield StickyPrompt(id="sticky_prompt")
                 yield from self._compose_dock()
             yield Sidebar(id="sidebar", classes="hidden")
-        yield WebRemoteBar(id="webar")
 
     def _compose_dock(self) -> ComposeResult:
         with Vertical(id="dock"):
@@ -375,6 +339,7 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                     soft_wrap=True,
                 )
                 yield EnhanceButton(id="enhance", classes="hidden")
+                yield WebButton(id="web_button")
                 yield PetBuddy(id="pet")
             with Horizontal(id="footer"):
                 yield FooterBar(id="footer_left", classes="-left")
@@ -484,15 +449,18 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
     def _welcome_info(self) -> dict:
         import pathlib
         from ..constants import VERSION
-        from ..constants.providers import PROVIDER_LABELS
 
         cwd = pathlib.Path.cwd()
         try:
             cwd_s = "~/" + str(cwd.relative_to(pathlib.Path.home()))
         except ValueError:
             cwd_s = str(cwd)
-        self._git_branch_checked_at = 0.0
-        self._refresh_git_branch(sync=True)
+        try:
+            from ..repl.banners import _current_git_branch
+
+            branch = _current_git_branch(cwd)
+        except Exception:
+            branch = None
         ctx: list[str] = []
         if state.project_context_file:
             ctx.append(str(state.project_context_file))
@@ -527,10 +495,8 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
             )
         return {
             "version": VERSION,
-            "model": state.MODEL,
-            "provider": PROVIDER_LABELS.get(state.provider, state.provider or ""),
             "cwd": cwd_s,
-            "branch": self._git_branch,
+            "branch": branch,
             "context": ctx,
             "warning": warning,
         }
@@ -548,12 +514,6 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
             for commit in (info.get("commits") or [])[:5]:
                 lines.append(f"[{ui.FG_DIM}]  · {_rich_escape(commit)}[/]")
             self._tui_console.print("\n".join(lines))
-        if self._web_primary_url:
-            esc = _rich_escape(self._web_primary_url)
-            self._tui_console.print(
-                f"[{ui.FG_DIM}]🌐 remote[/]  [link={esc}]{esc}[/link]  "
-                f"[{ui.FG_DIM}]· scan the QR top-right (click it to hide) · /web qr · {key_label('⌃⇧U')} copy[/]"
-            )
 
     def _render_welcome_intro(self) -> None:
         """Welcome block, then start background workers (so their output
@@ -627,18 +587,22 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
 
     # ─── footer ──────────────────────────────────────────────────────
     def _footer_segments(self) -> tuple[list[tuple], list[tuple]]:
-        """``(priority, markup, action)``; lower priority number = kept longer.
+        """``(priority, markup, action[, (priority, short markup)])``; lower
+        priority number = kept longer. A segment with a short form shrinks to
+        it instead of being dropped.
 
-        Clickable: agent → agents, model → models, provider → setup hub,
-        think → effort, tokens → sidebar, pin → pins, ``?`` → shortcuts.
+        Session state only — the welcome block already shows cwd, branch
+        and project context. Clickable: agent → agents, model → models,
+        provider → setup hub, think → effort, tokens → sidebar, web remote →
+        QR + link dialog, ``?`` → shortcuts.
         """
-        from ..constants.providers import PROVIDER_LABELS
+        from ..constants.providers import PROVIDER_LABELS, provider_label  # noqa: F401
 
         left: list[tuple[int, str]] = [
             (0, _agent_badge_markup(), "open_agents"),
             (0, f"[{ui.FG}]{_rich_escape(state.MODEL.rsplit('/', 1)[-1])}[/]", "open_models"),
         ]
-        prov = PROVIDER_LABELS.get(state.provider, state.provider or "")
+        prov = provider_label(state.provider or "")
         if prov:
             left.append((5, f"[{ui.FG_DIM}]{_rich_escape(prov)}[/]", "open_providers"))
         if state.plan_mode:
@@ -664,9 +628,9 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         if total:
             right.append((3, f"[{ui.FG_MUTE}]{_fmt_tokens(total)}[/] [{ui.FG_DIM}]tokens[/]", "toggle_sidebar"))
         try:
-            from ..constants import PRICING
+            from ..constants import model_pricing
 
-            price = PRICING.get(state.MODEL)
+            price = model_pricing(state.MODEL, state.provider)
             if price and (price[0] or price[1]) and total:
                 from ..repl.stats import estimated_cost
 
@@ -675,12 +639,11 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                     right.append((6, f"[{ui.FG_DIM}]${cost:.2f}[/]", None))
         except Exception:
             pass
-        self._refresh_git_branch()
-        if self._git_branch:
-            right.append((7, f"[{ui.FG_DIM}]⎇ {_rich_escape(self._git_branch)}[/]", None))
-        pin = _pin_status_markup()
-        if pin:
-            right.append((9, pin, "open_pins"))
+        web = self._web_footer_markup()
+        if web:
+            # The address goes before "? help"; the bare "🌐 web" stays long.
+            full, short = web
+            right.append((9, full, "web_connect", (2, short)))
         if state.show_internal:
             right.append((10, f"[{ui.FG_DIM}]trace[/]", "toggle_internal"))
         right.append((8, f"[{ui.FG_DIM}]? help[/]", "show_shortcuts"))
@@ -714,9 +677,14 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
             if not candidates:
                 break
             _p, side, idx = max(candidates)
-            (left if side == "l" else right).pop(idx)
-        left_w.set_segments([(m, a) for _p, m, a in left])
-        right_w.set_segments([(m, a) for _p, m, a in right])
+            segs = left if side == "l" else right
+            seg = segs[idx]
+            if len(seg) > 3 and seg[3]:
+                segs[idx] = (*seg[3], seg[2])
+            else:
+                segs.pop(idx)
+        left_w.set_segments([(seg[1], seg[2]) for seg in left])
+        right_w.set_segments([(seg[1], seg[2]) for seg in right])
 
     # Footer click targets.
     def action_open_models(self) -> None:
@@ -734,10 +702,6 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
     def action_open_providers(self) -> None:
         if not isinstance(self.screen, ModalScreen):
             self._open_provider_hub()
-
-    def action_open_pins(self) -> None:
-        if not isinstance(self.screen, ModalScreen):
-            self._open_pin_modal()
 
     # Back-compat names used across the app / mixins / web remote.
     def _render_hintbar(self) -> None:
@@ -811,8 +775,9 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
     # ─── prompt stash (FIFO queue above the composer) ────────────────
     @staticmethod
     def _stash_preview(msg, max_len: int = 56) -> str:
-        text = msg[0] if isinstance(msg, tuple) else msg
-        preview = (text or "").replace("\n", " ").strip()
+        from ..media import queue_label
+
+        preview = queue_label(msg).replace("\n", " ").strip()
         if len(preview) > max_len:
             preview = preview[: max_len - 1] + "…"
         return _rich_escape(preview)
@@ -840,11 +805,17 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         bar.update(Text.from_markup("\n".join(rows)))
         self._sync_web_queue()
 
-    def _stash_prompt(self, text: str) -> None:
-        """Queue a prompt while the agent is busy (FIFO; shown in #queuebar)."""
+    def _stash_prompt(self, text: str, *, files: list[str] | None = None) -> None:
+        """Queue a prompt while the agent is busy (FIFO; shown in #queuebar).
+
+        ``files``: upload ids from the web remote (``jarvis/media.py``).
+        """
         from ..prompt_attachments import snapshot_registry
 
-        state.prompt_queue.append((text, snapshot_registry()))
+        if files:
+            state.prompt_queue.append((text, snapshot_registry(), list(files)))
+        else:
+            state.prompt_queue.append((text, snapshot_registry()))
         self._refresh_queue_bar()
 
     # ─── attachments ─────────────────────────────────────────────────
@@ -963,12 +934,32 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         def after(option_id: str | None):
             if not option_id:
                 return
+            if option_id.startswith(CONNECT_ID):
+                self._connect_provider_from_picker(option_id[len(CONNECT_ID):])
+                return
             from ..constants.providers import parse_model_option_id
             source, model_id = parse_model_option_id(option_id)
             self._apply_model_selection_worker(model_id, source=source)
-        from .model_modal import ModelPickerScreen
+        from .model_modal import ModelPickerScreen, CONNECT_ID
 
         self.push_screen(ModelPickerScreen(), after)
+
+    def _connect_provider_from_picker(self, provider: str) -> None:
+        """A "+ Connect <provider>" row in /model: ask for its key, then come
+        back to the picker so the new models can be chosen right away."""
+        from .key_modal import KeyModalScreen
+
+        def after(_: object) -> None:
+            self._set_status("ready")
+            try:
+                from ..constants.providers import catalog_connected_providers
+
+                if provider and provider in catalog_connected_providers():
+                    self._open_model_picker()
+            except Exception:
+                pass
+
+        self.push_screen(KeyModalScreen(focus=provider, add=bool(provider)), after)
 
     def _open_think_picker(self):
         def after(effort: str | None):
@@ -1386,8 +1377,9 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
 
         # Mark the worker itself cancelled: the global flag is cleared when
         # the next turn starts, but this thread must keep stopping.
-        state.cancel_thread(self._turn_threads.get(self._turn_id))
-        cancel_current_stream()
+        worker = self._turn_threads.get(self._turn_id)
+        state.cancel_thread(worker)
+        cancel_current_stream(thread_id=worker)
         if hasattr(self._tui_console, "cancel_pending_prompts"):
             self._tui_console.cancel_pending_prompts()
         self._turn_cancelled = True
@@ -1396,6 +1388,38 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         # queued turn can start streaming into a fresh block.
         self._tui_console.assistant_stream_abort()
         self._turn_done()
+
+    def _stop_turn_for_session_change(self) -> str:
+        """New chat / another session while a turn runs: stop that turn first.
+
+        Otherwise the old worker keeps "thinking" into the new chat — its reply
+        lands in the new session, the busy flag never clears and every new
+        prompt queues behind it. Prompts queued for the old chat are dropped
+        (they were follow-ups to a conversation that's gone). Returns a short
+        note ("" when nothing was running).
+        """
+        if not self._busy:
+            return ""
+        dropped = len(state.prompt_queue)
+        state.prompt_queue.clear()
+        self._refresh_queue_bar()
+        self._cancel_turn()
+        note = "stopped the running reply"
+        if dropped:
+            note += f" · dropped {dropped} queued message{'s' if dropped != 1 else ''}"
+        return note
+
+    def _resume_session(self, sid: int) -> bool:
+        """Load session ``sid`` into this chat (the /session picker's pick)."""
+        from .session_modal import resume_session_into_state
+
+        note = self._stop_turn_for_session_change()
+        if not resume_session_into_state(sid, self._tui_console.print, preview=False):
+            return False
+        self._render_loaded_session()
+        if note:
+            self._tui_console.print(f"[{ui.FG_DIM}]⏹ {note}[/]")
+        return True
 
     # ─── input handling ──────────────────────────────────────────────
     def on_prompt_area_submitted(self, event: "PromptArea.Submitted") -> None:
@@ -1453,7 +1477,12 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         """Move the newest queued prompt back into the composer (↑ while busy)."""
         if not state.prompt_queue:
             return False
-        item = state.prompt_queue.pop()
+        item = state.prompt_queue[-1]
+        if isinstance(item, tuple) and len(item) > 2 and item[2]:
+            # Its files live on the web side; the terminal can't re-attach them.
+            self._set_status("the last queued message has web attachments — it stays queued")
+            return False
+        state.prompt_queue.pop()
         text = item[0] if isinstance(item, tuple) else str(item)
         prompt = self.query_one("#prompt", PromptArea)
         self._popup_suppressed_for = text
@@ -1465,7 +1494,16 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         return True
 
     def _begin_turn(self, inp: str, *, echo: bool = True, display: str | None = None,
-                    badge: str = "") -> None:
+                    badge: str = "", attachments: list[str] | None = None) -> None:
+        """Start a turn. ``attachments``: upload ids sent from the web remote."""
+        files: list[dict] = []
+        if attachments:
+            from .. import media
+
+            files = [m for m in (media.get(i) for i in attachments) if m]
+            line = media.summary_line(files, limit=4) or "📎 attached files are no longer on this computer"
+            shown = display or inp
+            display = f"{shown}\n{line}" if shown.strip() else line
         state.cancel_requested.clear()
         self._turn_cancelled = False
         self._turn_is_llm = False
@@ -1486,10 +1524,12 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                                      badge=badge))
         transcript.follow()
         if self._web_bridge is not None:
-            self._web_bridge.emit(
-                "message",
-                {"role": "you", "text": inp, "title": "you"},
-            )
+            event = {"role": "you", "text": inp, "title": "you"}
+            if files:
+                from ..media import public
+
+                event["attachments"] = [public(m) for m in files]
+            self._web_bridge.emit("message", event)
         self._busy = True
         self._turn_t0 = time.monotonic()
         self._pet_turn_started()
@@ -1505,17 +1545,17 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         self._start_activity_pulse()
         self._set_placeholder(_BUSY_PLACEHOLDER)
         self._sync_web_busy()
-        self._run_turn(inp, self._turn_id)
+        if attachments:  # _run_turn warns about (and skips) any that were removed
+            self._run_turn(inp, self._turn_id, list(attachments))
+        else:
+            self._run_turn(inp, self._turn_id)
 
     # ─── session picker ──────────────────────────────────────────────
     def _open_session_picker(self):
         def after(sid):
             if sid is None:
                 return
-            from .session_modal import resume_session_into_state
-
-            if resume_session_into_state(sid, self._tui_console.print, preview=False):
-                self._render_loaded_session()
+            self._resume_session(sid)
         from .session_modal import SessionPickerScreen
 
         self.push_screen(SessionPickerScreen(), after)
@@ -1560,7 +1600,13 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
             role = msg.get("role", "")
             content = msg.get("content", "")
             if role == "user":
-                text = self._content_text(content).strip()
+                from ..media import attachments_in, summary_line
+
+                shown, files = attachments_in(content)
+                if files:  # sent from the web with attachments: names, not paths
+                    text = f"{shown}\n{summary_line(files, limit=4)}".strip()
+                else:
+                    text = self._content_text(content).strip()
                 if text:
                     blocks.append(UserBlock(text))
                 continue
@@ -1624,8 +1670,13 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         self._refresh_activity_widgets()
 
     @work(thread=True, exclusive=True)
-    def _run_turn(self, inp: str, turn_id: int | None = None) -> None:
-        """Mirror of jarvis.main._send_and_loop, adapted for the TUI."""
+    def _run_turn(self, inp: str, turn_id: int | None = None,
+                  attachments: list[str] | None = None) -> None:
+        """Mirror of jarvis.main._send_and_loop, adapted for the TUI.
+
+        ``attachments``: upload ids (web remote) — they join the user message
+        as a file note + image references (``jarvis/media.py``).
+        """
         from ..commands.dispatch import handle_slash
         from ..repl.stream import call_claude_stream
         from ..repl.render import (
@@ -1648,13 +1699,13 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
         self._tui_console.reset_stream_ui()
 
         try:
-            if inp.startswith("/"):
+            if inp.startswith("/") and not attachments:
                 head = inp.split(maxsplit=1)[0]
                 if head[1:] in state.aliases:
                     rest = inp[len(head):]
                     inp = state.aliases[head[1:]] + rest
 
-            if inp.startswith("!"):
+            if inp.startswith("!") and not attachments:
                 cmd = inp[1:].strip()
                 if cmd:
                     from ..tools.shell import run_bash
@@ -1664,10 +1715,13 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                         out = run_bash(cmd)
                     finally:
                         state.auto_approve = prev
-                    self._tui_console.print(self._shell_output_text(out))
+                    # Esc already said "interrupted": don't print a stopped
+                    # command's leftovers into whatever chat is showing now.
+                    if not (stale() or state.turn_cancelled()):
+                        self._tui_console.print(self._shell_output_text(out))
                 return
 
-            if inp.startswith("/"):
+            if inp.startswith("/") and not attachments:
                 result, should_send, inp = handle_slash(inp)
                 if result == "exit":
                     self.call_from_thread(self.exit)
@@ -1706,12 +1760,29 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                 return
 
             self._turn_is_llm = True
-            user_msg = {"role": "user", "content": inp}
+            content: str | list = inp
+            title = inp
+            if attachments:
+                from .. import media
+
+                files = [m for m in (media.get(i) for i in attachments) if m]
+                if len(files) < len(attachments):
+                    self._tui_console.print(
+                        f"[{ui.WARN}]⚠ {len(attachments) - len(files)} attached file(s) "
+                        "were removed before sending[/]"
+                    )
+                if files:
+                    content = media.user_content(inp, files)
+                    title = inp or media.summary_line(files)
+                elif not inp.strip():
+                    self._turn_is_llm = False  # nothing left to send
+                    return
+            user_msg = {"role": "user", "content": content}
             state.messages.append(user_msg)
             state.web_tool_used_this_turn = False
             if state.current_session_id:
                 db_append_message(state.current_session_id, len(state.messages) - 1, user_msg)
-                db_set_title_if_empty(state.current_session_id, inp)
+                db_set_title_if_empty(state.current_session_id, title)
 
             empty_retries = 0
             while True:
@@ -1732,6 +1803,11 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                     )
                     break
                 empty_retries = 0
+                # Cancelled while the reply was finishing (Esc, New chat, another
+                # session): it belongs to a turn that's over — never write it into
+                # whatever conversation / session is current now.
+                if stale() or state.turn_cancelled():
+                    raise KeyboardInterrupt()
                 asst_msg = {"role": "assistant", "content": resp.content}
                 state.messages.append(asst_msg)
                 if state.current_session_id:
@@ -1836,6 +1912,7 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
 
         if state.prompt_queue:
             item = state.prompt_queue.pop(0)
+            web_files: list[str] = []
             if isinstance(item, tuple):
                 next_prompt = item[0]
                 if len(item) > 1 and isinstance(item[1], tuple):
@@ -1844,10 +1921,16 @@ class JarvisTUI(WebRemoteMixin, ActivityMixin, PetMixin, PromptNavMixin, LoopMix
                     attachments, llm_paths = item[1], None
                 from ..prompt_attachments import restore_registry
                 restore_registry(attachments, llm_paths)
+                if len(item) > 2 and isinstance(item[2], list):
+                    web_files = item[2]
             else:
                 next_prompt = item
             next_prompt = next_prompt.strip()
             self._refresh_queue_bar()
+
+            if web_files:
+                self._begin_turn(next_prompt, attachments=web_files)
+                return
 
             if next_prompt.startswith("/"):
                 head = next_prompt.split(maxsplit=1)[0]

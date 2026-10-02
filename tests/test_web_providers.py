@@ -78,9 +78,10 @@ def test_format_check_points_to_the_right_provider():
     token = pv.check_key_format("anthropic_api", "sk-ant-oat01-" + "x" * 20)
     assert token["suggest"] == "anthropic"
     assert "start with sk-or-" in pv.check_key_format("openrouter", "x" * 24)["error"]
-    assert "one line" in pv.check_key_format("kimchi", "abc def ghi jkl mno")["error"]
-    assert "short" in pv.check_key_format("kimchi", "abc")["error"]
-    assert pv.check_key_format("kimchi", "k" * 24) is None
+    assert "one line" in pv.check_key_format("opencode", "abc def ghi jkl mno")["error"]
+    assert "short" in pv.check_key_format("opencode", "abc")["error"]
+    assert pv.check_key_format("opencode", "k" * 24) is None
+    assert pv.check_key_format("kimchi", "k" * 24)["error"] == "Unknown provider"  # removed
 
 
 # ─── Listing ────────────────────────────────────────────────────────────
@@ -88,13 +89,14 @@ def test_format_check_points_to_the_right_provider():
 
 def test_list_shows_status_and_never_the_key(keys, monkeypatch):
     keys["openrouter"].write_text("sk-or-v1-secretsecretsecret1234", encoding="utf-8")
-    monkeypatch.setenv("KIMCHI_API_KEY", "kimchi-env-secret-5678")
+    monkeypatch.setenv("OPENCODE_API_KEY", "opencode-env-secret-5678")
     data = pv.list_providers()
     rows = {r["id"]: r for r in data["providers"]}
 
     assert rows["openrouter"]["connected"] and rows["openrouter"]["source"] == "file"
     assert rows["openrouter"]["hint"] == "…1234"
-    assert rows["kimchi"]["source"] == "env" and rows["kimchi"]["env_var"] == "KIMCHI_API_KEY"
+    assert rows["opencode"]["source"] == "env" and rows["opencode"]["env_var"] == "OPENCODE_API_KEY"
+    assert "kimchi" not in rows
     assert not rows["anthropic_api"]["connected"]
     assert rows["harness_agent"]["active"] and data["active"] == "harness_agent"
     assert data["connected"] == 2  # the free tier doesn't count
@@ -140,14 +142,14 @@ def test_saving_writes_the_cleaned_key_then_applies_it_on_the_main_thread(keys, 
 def test_replacing_a_key_says_so(keys, monkeypatch):
     import jarvis.commands.control as control
 
-    keys["kimchi"].write_text("kimchi-old-" + "k" * 16, encoding="utf-8")
+    keys["opencode"].write_text("oc-old-" + "k" * 16, encoding="utf-8")
     monkeypatch.setattr(pv, "verify_key", lambda card_id, key: "ok")
     monkeypatch.setattr(control, "apply_key_change", lambda provider, removed=False: "")
-    monkeypatch.setattr(state, "provider", "kimchi")  # already the live provider
+    monkeypatch.setattr(state, "provider", "opencode")  # already the live provider
     run = lambda action, data: pv.run_provider_action(action, data, console_print=lambda *a: None)
-    res = pv.save_key("kimchi", "kimchi-new-" + "n" * 16, use=True, run_action=run)
-    assert res["ok"] and res["message"] == "Saved the new Kimchi key"
-    assert keys["kimchi"].read_text(encoding="utf-8").startswith("kimchi-new-")
+    res = pv.save_key("opencode", "oc-new-" + "n" * 16, use=True, run_action=run)
+    assert res["ok"] and res["message"] == "Saved the new OpenCode Go key"
+    assert keys["opencode"].read_text(encoding="utf-8").startswith("oc-new-")
 
 
 def test_unverifiable_key_is_saved_but_not_marked_verified(keys, monkeypatch):
@@ -186,22 +188,22 @@ def test_verify_key_reads_401_as_rejected(monkeypatch):
 def test_remove_key(keys, monkeypatch):
     import jarvis.commands.control as control
 
-    keys["kimchi"].write_text("kimchi-" + "k" * 20, encoding="utf-8")
+    keys["opencode"].write_text("oc-" + "k" * 20, encoding="utf-8")
     monkeypatch.setattr(control, "apply_key_change", lambda provider, removed=False: "")
-    assert pv.remove_key("kimchi")["ok"]
-    assert not keys["kimchi"].exists()
+    assert pv.remove_key("opencode")["ok"]
+    assert not keys["opencode"].exists()
 
-    monkeypatch.setenv("KIMCHI_API_KEY", "kimchi-env-" + "k" * 10)
-    res = pv.remove_key("kimchi")
-    assert not res["ok"] and "KIMCHI_API_KEY" in res["error"]
+    monkeypatch.setenv("OPENCODE_API_KEY", "oc-env-" + "k" * 10)
+    res = pv.remove_key("opencode")
+    assert not res["ok"] and "OPENCODE_API_KEY" in res["error"]
 
 
 # ─── Switching ──────────────────────────────────────────────────────────
 
 
 def test_use_needs_a_connection_first(keys):
-    res = pv.run_provider_action("provider_use", {"id": "kimchi"}, console_print=lambda *a: None)
-    assert not res["ok"] and res["error"] == "Add a key for Kimchi first"
+    res = pv.run_provider_action("provider_use", {"id": "opencode"}, console_print=lambda *a: None)
+    assert not res["ok"] and res["error"] == "Add a key for OpenCode Go first"
     res = pv.use_card("anthropic")
     assert res["error"] == "Sign in to Claude Pro / Max first"
 
@@ -230,10 +232,10 @@ def test_model_for_source_keeps_a_model_the_source_serves(monkeypatch):
 
     monkeypatch.setattr(p, "models_for_source", lambda source, cached=False, live=False: [("a", ""), ("b", "")])
     monkeypatch.setattr(state, "MODEL", "b")
-    assert pv.model_for_source("kimchi") == "b"
+    assert pv.model_for_source("anthropic_api") == "b"
     monkeypatch.setattr(state, "MODEL", "elsewhere")
-    monkeypatch.setattr(p, "KIMCHI_DEFAULT_MODEL", "retired")
-    assert pv.model_for_source("kimchi") == "a"  # default gone from the list → first served
+    monkeypatch.setattr(p, "ANTHROPIC_DEFAULT_MODEL", "retired")
+    assert pv.model_for_source("anthropic_api") == "a"  # default gone from the list → first served
 
 
 def test_signing_out_of_the_live_account_lands_on_the_free_tier(keys, monkeypatch):
@@ -411,12 +413,12 @@ def test_http_routes_need_the_token_and_run_on_the_bridge(keys, monkeypatch):
             return e.code, {}
 
     try:
-        assert post("/api/providers/key", {"id": "kimchi", "key": "k" * 24}, token="wrong")[0] == 401
-        status, body = post("/api/providers/key", {"id": "kimchi", "key": "kimchi-" + "k" * 20})
+        assert post("/api/providers/key", {"id": "opencode", "key": "k" * 24}, token="wrong")[0] == 401
+        status, body = post("/api/providers/key", {"id": "opencode", "key": "oc-" + "k" * 20})
         assert status == 200 and body["ok"] and body["verified"]
-        assert keys["kimchi"].exists() and actions == ["provider_key_saved"]
+        assert keys["opencode"].exists() and actions == ["provider_key_saved"]
         rows = {r["id"]: r for r in body["providers"]["providers"]}
-        assert rows["kimchi"]["connected"] and "k" * 20 not in json.dumps(body)
+        assert rows["opencode"]["connected"] and "k" * 20 not in json.dumps(body)
         assert "provider" in body["state"]
 
         events = []
@@ -441,3 +443,108 @@ def test_provider_command_opens_in_the_browser_not_on_the_computer():
         assert f"'{cmd}': 'provider'" in catalog
     html = (STATIC / "index.html").read_text(encoding="utf-8")
     assert 'id="providers"' in html and 'id="providers-card"' in html
+
+
+# ─── Providers from models.dev ──────────────────────────────────────────
+
+
+@pytest.fixture
+def catalog(keys, monkeypatch):
+    from jarvis.auth import models_dev
+
+    for var in ("DEEPSEEK_API_KEY", "LMSTUDIO_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    raw = {
+        "deepseek": {
+            "id": "deepseek", "name": "DeepSeek", "npm": "@ai-sdk/openai-compatible",
+            "api": "https://api.deepseek.com", "env": ["DEEPSEEK_API_KEY"],
+            "doc": "https://platform.deepseek.com",
+            "models": {"deepseek-chat": {
+                "id": "deepseek-chat", "name": "DeepSeek Chat", "tool_call": True,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "limit": {"context": 128000, "output": 8192}, "cost": {"input": 0.3, "output": 1.2},
+            }},
+        },
+        "lmstudio": {
+            "id": "lmstudio", "name": "LMStudio", "npm": "@ai-sdk/openai-compatible",
+            "api": "http://127.0.0.1:1234/v1", "env": ["LMSTUDIO_API_KEY"],
+            "models": {"local": {"id": "local", "tool_call": True,
+                                 "modalities": {"input": ["text"], "output": ["text"]}}},
+        },
+    }
+    models_dev.store(models_dev.trim(raw))
+    return models_dev
+
+
+def test_catalog_providers_are_listed_after_the_built_ins(catalog):
+    rows = pv.list_providers()["providers"]
+    ids = [r["id"] for r in rows]
+    assert ids[: len(pv.CARDS)] == [c.id for c in pv.CARDS]
+    deep = next(r for r in rows if r["id"] == "md:deepseek")
+    assert deep["catalog"] and deep["kind"] == "key" and not deep["connected"]
+    assert deep["env_var"] == "DEEPSEEK_API_KEY"
+    assert deep["link"] == "https://platform.deepseek.com"
+    assert deep["checked"] is True
+    local = next(r for r in rows if r["id"] == "md:lmstudio")
+    assert local["local"] and local["checked"] is False
+
+
+def test_saving_a_catalog_key_verifies_then_stores_it(catalog, monkeypatch):
+    from jarvis.auth import catalog_keys
+
+    seen = []
+    monkeypatch.setattr(pv, "verify_key", lambda cid, key, **k: seen.append((cid, key)) or "ok")
+    run = Recorder()
+    res = pv.save_key("md:deepseek", "export DEEPSEEK_API_KEY=sk-deep-abcdef123456", use=True, run_action=run)
+    assert res["ok"] and res["verified"]
+    assert seen == [("md:deepseek", "sk-deep-abcdef123456")]
+    assert catalog_keys.get_key("md:deepseek") == "sk-deep-abcdef123456"
+    assert run.calls == [("provider_key_saved", {"id": "md:deepseek", "use": True, "replaced": False})]
+    row = next(r for r in pv.list_providers()["providers"] if r["id"] == "md:deepseek")
+    assert row["connected"] and row["hint"] == "…3456"
+
+
+def test_a_refused_catalog_key_is_never_saved(catalog, monkeypatch):
+    from jarvis.auth import catalog_keys
+
+    monkeypatch.setattr(pv, "verify_key", lambda *a, **k: "rejected")
+    res = pv.save_key("md:deepseek", "sk-deep-abcdef123456", use=True, run_action=Recorder())
+    assert not res["ok"] and res["rejected"]
+    assert not catalog_keys.has_key("md:deepseek")
+
+
+def test_catalog_key_can_reference_an_env_var(catalog, monkeypatch):
+    from jarvis.auth import catalog_keys
+
+    monkeypatch.setattr(pv, "verify_key", lambda *a, **k: pytest.fail("a reference is not sent anywhere"))
+    assert not pv.save_key("md:deepseek", "$MY_DEEPSEEK", use=False, run_action=Recorder())["ok"]
+    monkeypatch.setenv("MY_DEEPSEEK", "sk-from-env-123456")
+    assert pv.save_key("md:deepseek", "$MY_DEEPSEEK", use=False, run_action=Recorder())["ok"]
+    assert catalog_keys.get_key("md:deepseek") == "sk-from-env-123456"
+    row = next(r for r in pv.list_providers()["providers"] if r["id"] == "md:deepseek")
+    assert row["hint"] == "$MY_DEEPSEEK"
+
+
+def test_catalog_check_request_uses_the_providers_base_url(catalog):
+    url, headers = pv._check_request("md:deepseek", "k")
+    assert url == "https://api.deepseek.com/models" and headers["Authorization"] == "Bearer k"
+    assert pv._check_request("md:lmstudio", "k") is None  # local: nothing to ask
+
+
+def test_use_and_remove_a_catalog_provider(catalog, monkeypatch):
+    from jarvis.auth import catalog_keys
+
+    catalog_keys.save("md:deepseek", "sk-deep-abcdef123456")
+    picked = []
+
+    def fake_apply(model, source=""):
+        picked.append((model, source))
+        state.provider = source
+
+    monkeypatch.setattr("jarvis.commands.control._apply_model_selection", fake_apply)
+    res = pv.use_card("md:deepseek")
+    assert res["ok"] and picked == [("deepseek-chat", "md:deepseek")]
+
+    monkeypatch.setattr("jarvis.commands.control.apply_key_change", lambda p, removed=False: "")
+    assert pv.remove_key("md:deepseek")["ok"]
+    assert not catalog_keys.has_key("md:deepseek")

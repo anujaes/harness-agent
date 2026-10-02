@@ -67,20 +67,22 @@ def current_user_sid() -> str | None:
     return sid or _sid_from_whoami()
 
 
-def _windows_owner_only(path: pathlib.Path) -> bool:
+def _windows_owner_only(path: pathlib.Path, rights: str = "F") -> bool:
     """Drop inherited ACEs and grant full control to the current user only.
 
     ``os.chmod`` can only toggle the read-only bit on Windows, so the
     equivalent of mode 600 is an explicit ACL set with ``icacls``. The grant
     names the user by SID (``*S-1-5-…``): a ``DOMAIN\\user`` name can fail to
     resolve (error 1332), which would leave the inherited ACL in place.
+    ``rights`` is the icacls permission string (``(OI)(CI)F`` for a folder
+    whose contents should inherit the grant).
     """
     sid = current_user_sid()
     if not sid:
         return False
     try:
         r = subprocess.run(
-            ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:F"],
+            ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:{rights}"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             timeout=10, check=False, **hidden_subprocess_kwargs(),
         )
@@ -98,6 +100,23 @@ def restrict_to_owner(path: pathlib.Path) -> bool:
         return _windows_owner_only(pathlib.Path(path))
     try:
         os.chmod(path, FILE_PERMISSION)
+    except OSError:
+        return False
+    return True
+
+
+def restrict_dir_to_owner(path: pathlib.Path) -> bool:
+    """Best effort: make the folder ``path`` private to its owner (mode 700).
+
+    On Windows the owner-only grant is inheritable (``(OI)(CI)``), so every
+    file and subfolder created inside later is private too — the folder
+    equivalent of POSIX mode 700, which ``mkdir(mode=0o700)`` can't set there.
+    Returns whether it worked. Never raises.
+    """
+    if IS_WINDOWS:
+        return _windows_owner_only(pathlib.Path(path), rights="(OI)(CI)F")
+    try:
+        os.chmod(path, 0o700)
     except OSError:
         return False
     return True

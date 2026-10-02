@@ -13,9 +13,11 @@ export const CATALOG = [
   { group: 'Go to', picker: 'agent', cmd: '/agent', label: 'Agent', desc: 'Activate an agent profile', icon: 'sparkles', keys: 'profile persona' },
   { group: 'Go to', picker: 'skill', cmd: '/skill', label: 'Skills', desc: 'Browse installed skill packs', icon: 'book-open' },
   { group: 'Go to', picker: 'mcp', cmd: '/mcp', label: 'MCP servers', desc: 'Connect or disconnect tool servers', icon: 'plug', keys: 'tools servers' },
+  { group: 'Go to', picker: 'command', cmd: '/command', label: 'Custom commands', desc: 'Make your own slash commands from prompts you reuse', icon: 'terminal', keys: 'commands template templates prompt snippet macro custom new create edit shortcut' },
   { group: 'Go to', action: 'inspector-changes', label: 'File changes', desc: 'Files Jarvis created, edited or deleted, with diffs', icon: 'file-diff', keys: 'diff review git patch files edited changed side panel' },
+  { group: 'Go to', action: 'attach', label: 'Attach files', desc: 'Photos, video, audio, PDFs or documents (or drop / paste them)', icon: 'paperclip', keys: 'upload image photo picture screenshot file media document pdf video camera' },
   { group: 'Go to', action: 'inspector-activity', label: 'Activity', desc: 'What Jarvis is doing, its tool calls and background jobs', icon: 'activity', keys: 'tools jobs progress timeline running side panel' },
-  { group: 'Go to', picker: 'provider', cmd: '/provider', label: 'Providers and login', desc: 'Sign in, add API keys, switch provider', icon: 'key-round', keys: 'login logout sign in oauth api key keys account anthropic claude chatgpt codex openrouter opencode zen kimchi' },
+  { group: 'Go to', picker: 'provider', cmd: '/provider', label: 'Providers and login', desc: 'Sign in, add API keys, switch provider', icon: 'key-round', keys: 'login logout sign in oauth api key keys account anthropic claude chatgpt codex openrouter opencode zen' },
 
   { group: 'Conversation', action: 'session_new', cmd: '/new', label: 'New chat', desc: 'Start a fresh conversation', icon: 'plus', keys: 'clear fresh' },
   { group: 'Conversation', cmd: '/retry', label: 'Retry', desc: 'Send the last message again', icon: 'refresh-cw' },
@@ -61,6 +63,8 @@ export const LOCAL_PICKERS = {
   '/skill': 'skill',
   '/skills': 'skill',
   '/mcp': 'mcp',
+  '/command': 'command',
+  '/commands': 'command',
   '/provider': 'provider',
   '/providers': 'provider',
   '/login': 'provider',
@@ -72,6 +76,43 @@ export const LOCAL_PICKERS = {
 
 /** Commands whose argument the web picker takes too: `/provider openrouter`. */
 export const LOCAL_PICKERS_WITH_ARG = new Set(['/provider', '/providers', '/login', '/key']);
+
+/** `/command new|edit|show …` open the web editor; the rest (`global on`, `export x` …) go to Jarvis. */
+export function commandPickerArg(value) {
+  const m = /^\/commands?\s+(new|add|create|edit|show|open)\b\s*(.*)$/i.exec(String(value || '').trim());
+  return m ? `${m[1].toLowerCase()} ${m[2]}`.trim() : null;
+}
+
+// ─── Custom commands (commands.js fills this from /api/commands) ──────────
+
+let customItems = [];
+
+/** The user's own `/name` templates as catalog items (`custom: true`). */
+export function setCustomItems(items) {
+  customItems = Array.isArray(items) ? items : [];
+}
+
+export function getCustomItems() {
+  return customItems;
+}
+
+let refresher = null;
+
+/** commands.js registers how to reload the list; menus call `wantCustomItems` as they open. */
+export function setCustomRefresher(fn) {
+  refresher = fn;
+}
+
+export function wantCustomItems() {
+  refresher?.();
+}
+
+/** Everything the ⌘K palette lists: "Go to", then the user's commands, then the rest. */
+export function allItems() {
+  if (!customItems.length) return CATALOG;
+  const at = CATALOG.findIndex((it) => it.group !== 'Go to');
+  return [...CATALOG.slice(0, at), ...customItems, ...CATALOG.slice(at)];
+}
 
 export const LAPTOP_COMMANDS = new Set(
   CATALOG.filter((c) => c.laptop).map((c) => c.cmd.trim()),
