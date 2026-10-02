@@ -40,7 +40,9 @@ htmlcov/
 
 # Claude / local tool settings
 .claude/settings.local.json
-.claude/
+.claude/*
+# Project skills are shared with the repo (Claude Code and Jarvis both load them).
+!.claude/skills/
 
 # Project skills (local config, not repo-level)
 .skills/
