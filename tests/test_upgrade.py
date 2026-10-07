@@ -30,7 +30,7 @@ def test_cmd_upgrade_succeeds_after_managed_reset(monkeypatch, tmp_path):
             method="reset",
         ),
     )
-    monkeypatch.setattr(upgrade_mod, "pip_install_repo", lambda *_a, **_k: True)
+    monkeypatch.setattr(upgrade_mod, "finish_update", lambda *_a, **_k: "installed")
     reexec_called = {"n": 0}
     monkeypatch.setattr(
         upgrade_mod,
@@ -81,8 +81,8 @@ def test_cmd_upgrade_aborts_on_dirty_dev_clone(monkeypatch, tmp_path):
     pip_called = {"n": 0}
     monkeypatch.setattr(
         upgrade_mod,
-        "pip_install_repo",
-        lambda *_a, **_k: pip_called.__setitem__("n", pip_called["n"] + 1) or True,
+        "finish_update",
+        lambda *_a, **_k: pip_called.__setitem__("n", pip_called["n"] + 1) or "installed",
     )
 
     assert upgrade_mod.cmd_upgrade("") is True

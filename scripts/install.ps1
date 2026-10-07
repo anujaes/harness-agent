@@ -207,6 +207,9 @@ for name in ("jarvis.tui.app", "jarvis.main"):
             $movedAside += , @($exe.FullName, $aside)
         } catch { }
     }
+    # Half-replaced dist-info folders an interrupted pip run left behind.
+    Get-ChildItem -Path (Join-Path $VenvDir 'Lib\site-packages') -Directory -Filter '~?rness_jarvis-*.dist-info' -ErrorAction SilentlyContinue |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     & $VenvPy -m pip install -e $InstallDir
     $pipExit = $LASTEXITCODE
     foreach ($pair in $movedAside) {
@@ -232,11 +235,13 @@ for name in ("jarvis.tui.app", "jarvis.main"):
     }
     # Write %LOCALAPPDATA% literally when we can: .cmd files are read in the
     # console code page, which would garble a non-ASCII user name.
-    $Target = Join-Path $VenvDir 'Scripts\jarvis.exe'
+    # python.exe -m jarvis, not Scripts\jarvis.exe: that exe's Python keeps it
+    # open as its script, so pip couldn't replace it while Jarvis runs.
+    $Target = $VenvPy
     if ($Target.StartsWith($env:LOCALAPPDATA, [StringComparison]::OrdinalIgnoreCase)) {
         $Target = '%LOCALAPPDATA%' + $Target.Substring($env:LOCALAPPDATA.Length)
     }
-    Set-Content -Path $Shim -Value "@echo off`r`n$Marker`r`n`"$Target`" %*" -Encoding ASCII -ErrorAction Stop
+    Set-Content -Path $Shim -Value "@echo off`r`n$Marker`r`n`"$Target`" -m jarvis %*" -Encoding ASCII -ErrorAction Stop
 
     Write-Host ''
     Write-Host 'Jarvis installed.'

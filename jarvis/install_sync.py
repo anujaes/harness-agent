@@ -255,6 +255,151 @@ def pip_install_repo(repo_root: pathlib.Path, *, timeout: int = 180) -> bool:
     return ok
 
 
+# Files whose change means the venv must be reinstalled (deps, entry points).
+_PACKAGING_FILES = ("pyproject.toml", "setup.py", "setup.cfg", "requirements.txt")
+# The comment line scripts/install.ps1 writes into the jarvis.cmd it owns.
+_SHIM_MARKER = "rem Jarvis launcher (scripts/install.ps1)"
+
+
+def packaging_changed(repo_root: pathlib.Path, old_head: str) -> bool:
+    """Whether the update from ``old_head`` to HEAD touched packaging files.
+
+    An editable install already runs the pulled code, so ``pip install -e .``
+    only matters when dependencies or entry points changed. Unknown history
+    (no ``old_head``, git error) counts as changed — reinstalling is the safe side.
+    """
+    if not old_head:
+        return True
+    rc, out, _err = _git_run(repo_root, ["diff", "--name-only", old_head, "HEAD", "--", *_PACKAGING_FILES],
+                             timeout=20)
+    return rc != 0 or bool(out.strip())
+
+
+def _pip_pending_file() -> pathlib.Path:
+    """Marker naming a checkout whose ``pip install`` must be retried at launch."""
+    from .constants import CONFIG_DIR
+
+    return CONFIG_DIR / "pip_pending"
+
+
+def _mark_pip_pending(repo_root: pathlib.Path) -> None:
+    try:
+        path = _pip_pending_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(repo_root), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_pip_pending() -> None:
+    try:
+        _pip_pending_file().unlink()
+    except OSError:
+        pass
+
+
+def ensure_python_launcher(bin_dir: pathlib.Path | None = None) -> bool:
+    """Windows: point the installer's ``jarvis.cmd`` at ``python.exe -m jarvis``.
+
+    Older installs ran ``Scripts\\jarvis.exe``. Its Python reads that exe as
+    its script and keeps it open, so pip can neither overwrite nor rename it
+    while any Jarvis runs and every update's ``pip install`` failed. Only a
+    shim carrying the installer's marker is rewritten. True when it changed.
+    """
+    if not IS_WINDOWS:
+        return False
+    if bin_dir is None:
+        bin_dir = pathlib.Path(os.environ.get("JARVIS_BIN_DIR") or pathlib.Path.home() / ".local" / "bin")
+    shim = pathlib.Path(bin_dir) / "jarvis.cmd"
+    try:
+        text = shim.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    if _SHIM_MARKER not in text:
+        return False
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower().endswith("\\scripts\\jarvis.exe\" %*"):
+            target = stripped[: -len(" %*")].strip('"')
+            python = target[: -len("jarvis.exe")] + "python.exe"
+            lines[i] = f'"{python}" -m jarvis %*'
+            try:
+                shim.write_text("\r\n".join(lines) + "\r\n", encoding="ascii")
+            except (OSError, UnicodeEncodeError):
+                return False
+            return True
+    return False
+
+
+def clean_broken_dists(site_packages: pathlib.Path | None = None) -> list[pathlib.Path]:
+    """Remove ``~?rness_jarvis-*`` folders a failed pip run left in site-packages.
+
+    pip renames a package's dist-info to ``~`` + its name minus the first
+    letter while replacing it; a failure in the middle leaves it behind, and
+    ``importlib.metadata`` then reports old versions next to the real one.
+    Only this package's leftovers are touched.
+    """
+    import re
+    import sysconfig
+
+    root = pathlib.Path(site_packages or sysconfig.get_paths()["purelib"])
+    pattern = re.compile(r"^~.rness_jarvis-.*\.dist-info$", re.IGNORECASE)
+    removed: list[pathlib.Path] = []
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return removed
+    for entry in entries:
+        if entry.is_dir() and pattern.match(entry.name):
+            shutil.rmtree(entry, ignore_errors=True)
+            if not entry.exists():
+                removed.append(entry)
+    return removed
+
+
+def finish_update(repo_root: pathlib.Path, old_head: str) -> str:
+    """After a successful git sync: ``"skipped"``, ``"installed"`` or ``"deferred"``.
+
+    The pulled code is already live for an editable install, so pip runs only
+    when packaging changed (or an earlier install is still pending). When it
+    fails — on Windows usually because a running Jarvis holds a file — the
+    install is retried at the next launch instead of blocking the update.
+    """
+    ensure_python_launcher()
+    clean_broken_dists()
+    pending = _pip_pending_file().exists()
+    if not pending and not packaging_changed(repo_root, old_head):
+        return "skipped"
+    if pip_install_repo(repo_root, timeout=240):
+        _clear_pip_pending()
+        return "installed"
+    _mark_pip_pending(repo_root)
+    return "deferred"
+
+
+def run_pending_install() -> bool | None:
+    """At launch, finish a ``pip install`` an update had to defer.
+
+    None when nothing is pending, else whether it worked (a failure keeps the
+    marker for the next launch).
+    """
+    path = _pip_pending_file()
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    root = pathlib.Path(raw) if raw else None
+    if root is None or not (root / "pyproject.toml").is_file():
+        _clear_pip_pending()
+        return None
+    clean_broken_dists()
+    if pip_install_repo(root, timeout=240):
+        _clear_pip_pending()
+        return True
+    return False
+
+
 def harness_agent_models_available() -> bool:
     """True when this process can list free Harness Agent models."""
     try:
@@ -279,9 +424,21 @@ def set_restart_handler(handler: Callable[[], None] | None) -> None:
     _restart_handler = handler
 
 
+def _restart_argv() -> list[str]:
+    """Command line for the restarted Jarvis.
+
+    Windows always uses ``python -m jarvis``: never the ``jarvis.exe`` the
+    next update has to replace, and a ``-m`` launch's ``argv[0]`` (the
+    package's ``__main__.py``) can't be run as a plain script.
+    """
+    if IS_WINDOWS:
+        return [sys.executable, "-m", "jarvis", *sys.argv[1:]]
+    return [sys.executable, *sys.argv]
+
+
 def _restart_in_child() -> None:
     try:
-        rc = subprocess.run([sys.executable, *sys.argv], check=False).returncode
+        rc = subprocess.run(_restart_argv(), check=False).returncode
     except KeyboardInterrupt:
         rc = 130
     raise SystemExit(rc)

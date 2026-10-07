@@ -15,9 +15,9 @@ from ..repl.turn_progress import report_turn_phase
 from ..install_sync import (
     MANAGED_INSTALL_DIR,
     find_install_root,
+    finish_update,
     install_command,
     manual_pip_command,
-    pip_install_repo,
     reexec_jarvis,
     sync_repo_to_remote,
 )
@@ -146,6 +146,8 @@ def cmd_upgrade(arg: str) -> bool:
     # ── Actual upgrade ─────────────────────────────────────────────
     report_turn_phase("Fetching changes…")
     console.print("[cyan]↓ Fetching latest changes…[/]")
+    rc, old_head, _err = _run(["git", "rev-parse", "HEAD"], repo_root)
+    old_head = old_head if rc == 0 else ""
 
     sync = sync_repo_to_remote(repo_root, fetch_timeout=120, sync_timeout=120)
     if not sync.ok:
@@ -173,19 +175,22 @@ def cmd_upgrade(arg: str) -> bool:
         console.print(f"[cyan]⬇ Pulled {sync.branch}[/]")
         console.print("[green]✓ git pull succeeded[/]")
 
-    # Step 3: editable pip install into the running interpreter
+    # Step 3: editable pip install — only when packaging changed. The pulled
+    # code is already live; a failed install (on Windows, files held by a
+    # running Jarvis) is retried at the next launch instead of stopping here.
     report_turn_phase("Installing package…")
     console.print("[cyan]≡ Installing (editable)…[/]")
-    pip_ok = pip_install_repo(repo_root, timeout=240)
-    if not pip_ok:
-        console.print("[red]✗ pip install -e . failed.[/]")
+    outcome = finish_update(repo_root, old_head)
+    if outcome == "skipped":
+        console.print("[green]✓ No dependency changes — nothing to reinstall[/]")
+    elif outcome == "installed":
+        console.print("[green]✓ pip install -e . succeeded[/]")
+    else:
         console.print(
-            "[dim]Try manually:[/] "
-            f"[cyan]{escape(manual_pip_command(repo_root))}[/]"
+            "[yellow]⚠ pip install -e . couldn't finish now (another Jarvis may be using its files) — "
+            "it runs again on the next launch.[/]\n"
+            f"[dim]Or close every Jarvis window and run:[/] [cyan]{escape(manual_pip_command(repo_root))}[/]"
         )
-        return True
-
-    console.print("[green]✓ pip install -e . succeeded[/]")
 
     try:
         new_version_file = repo_root / "jarvis" / "constants" / "models.py"

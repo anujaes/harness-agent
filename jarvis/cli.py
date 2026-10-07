@@ -165,7 +165,15 @@ def run_update_cli(argv: list[str]) -> int:
             print(f"  • {line}")
         if len(commits) > 20:
             print(f"  … (+{len(commits) - 20} more)")
-        if not result.get("pip_ok", True):
+        if result.get("pip") == "deferred":
+            # The new code is in place; only the package reinstall waits (on
+            # Windows a running Jarvis can hold its files) — not a failure.
+            print(
+                "\njarvis: note — `pip install -e .` couldn't finish now (another Jarvis may be\n"
+                "        using its files); it runs again on the next launch.",
+                file=sys.stderr,
+            )
+        elif not result.get("pip_ok", True):
             print(
                 "\njarvis: WARNING — `pip install -e .` did not complete cleanly.\n"
                 "        Try re-running `jarvis update` or reinstall manually.",
@@ -196,6 +204,27 @@ def _utf8_stdio() -> None:
                 pass
 
 
+def _finish_pending_install() -> None:
+    """Run a ``pip install`` an earlier update had to defer, before the app starts.
+
+    Nothing has the package's files open yet at this point, so it succeeds
+    where the in-session attempt was blocked. Silent when nothing is pending.
+    """
+    try:
+        from .install_sync import ensure_python_launcher, run_pending_install
+
+        # Installs last updated by older code still start the lockable jarvis.exe.
+        ensure_python_launcher()
+        done = run_pending_install()
+    except Exception:
+        return
+    if done is True:
+        print("jarvis: Finished installing the last update.", file=sys.stderr)
+    elif done is False:
+        print("jarvis: the last update's package install is still pending; "
+              "close other Jarvis windows and run `jarvis update`.", file=sys.stderr)
+
+
 def main() -> None:
     """Start Jarvis.
 
@@ -207,6 +236,9 @@ def main() -> None:
     _handle_post_reexec_banner()
 
     argv = sys.argv[1:]
+    if not os.environ.get("HARNESS_UPDATED_REEXEC"):
+        # A restart child shares its parent's locks: only a fresh launch retries.
+        _finish_pending_install()
     if argv and argv[0] in _UPDATE_ALIASES:
         raise SystemExit(run_update_cli(argv[1:]))
 

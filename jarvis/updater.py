@@ -9,8 +9,9 @@ import time
 from .constants import CONFIG_DIR
 from .install_sync import (
     find_install_root,
+    finish_update,
     harness_agent_models_available,
-    pip_install_repo,
+    run_pending_install,
     sync_repo_to_remote,
 )
 
@@ -127,17 +128,17 @@ def check_and_update() -> dict | None:
         if not sync.ok:
             return None
 
-        pip_ok = pip_install_repo(root)
-        if not pip_ok:
-            # Retry once — friend installs often hit transient pip errors.
-            pip_ok = pip_install_repo(root, timeout=240)
+        # pip only when packaging changed; a failure is retried at next launch.
+        outcome = finish_update(root, old_head)
+        pip_ok = outcome != "deferred"
 
         result = {
             "updated": True,
             "count": behind,
             "commits": new_commits,
-            "pip_installed": pip_ok,
+            "pip_installed": outcome == "installed",
             "pip_ok": pip_ok,
+            "pip": outcome,
             "harness_models": harness_agent_models_available(),
         }
 
@@ -201,7 +202,10 @@ def force_update() -> dict:
     behind = int(behind_str) if code == 0 and behind_str.isdigit() else 0
 
     if remote_head == old_head or behind == 0:
-        return {**base, "status": "up_to_date", "head": old_head[:7]}
+        # An install an earlier update had to defer can be finished now.
+        pending = run_pending_install()
+        extra = {} if pending is None else {"pip": "installed" if pending else "deferred", "pip_ok": pending}
+        return {**base, "status": "up_to_date", "head": old_head[:7], **extra}
 
     code, log_out = _git("log", "--oneline", f"HEAD..{upstream}", cwd=root, timeout=10)
     new_commits = [line.strip() for line in log_out.splitlines() if line.strip()]
@@ -212,9 +216,8 @@ def force_update() -> dict:
         return {**base, "status": "sync_failed", "error": sync.error,
                 "count": behind, "commits": new_commits}
 
-    pip_ok = pip_install_repo(root)
-    if not pip_ok:
-        pip_ok = pip_install_repo(root, timeout=240)
+    outcome = finish_update(root, old_head)
+    pip_ok = outcome != "deferred"
 
     _record_update_check()
 
@@ -223,8 +226,9 @@ def force_update() -> dict:
         "status": "updated",
         "count": behind,
         "commits": new_commits,
-        "pip_installed": pip_ok,
+        "pip_installed": outcome == "installed",
         "pip_ok": pip_ok,
+        "pip": outcome,
         "old_head": old_head[:7],
         "new_head": remote_head[:7],
         "harness_models": harness_agent_models_available(),

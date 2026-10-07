@@ -15,7 +15,7 @@ def test_check_and_update_succeeds_when_sync_resets_dirty_managed_install(
     (root / ".git").mkdir()
 
     monkeypatch.setattr("jarvis.updater.find_install_root", lambda: root)
-    monkeypatch.setattr("jarvis.updater.pip_install_repo", lambda *_a, **_k: True)
+    monkeypatch.setattr("jarvis.updater.finish_update", lambda *_a, **_k: "installed")
     monkeypatch.setattr(
         "jarvis.updater.harness_agent_models_available",
         lambda: True,
@@ -68,9 +68,9 @@ def test_check_and_update_aborts_when_sync_fails_on_dirty_dev_clone(
 
     def _pip(*_a, **_k):
         pip_called["n"] += 1
-        return True
+        return "installed"
 
-    monkeypatch.setattr("jarvis.updater.pip_install_repo", _pip)
+    monkeypatch.setattr("jarvis.updater.finish_update", _pip)
 
     def fake_git(*args, cwd, timeout=30):
         cmd = list(args)

@@ -9,6 +9,14 @@ upstream range it covers. Maintained with the `release-notes` skill
 
 ## Unreleased
 
+## 2026-10-07 — Windows: updating while Jarvis is open (Jarvis 0.3.1)
+
+### Windows support
+- `/upgrade`, `jarvis update` and the automatic update no longer get stuck while Jarvis is open. The `jarvis` command now starts `python -m jarvis` instead of `jarvis.exe`, which the running Jarvis kept locked so the package reinstall failed. Existing installs switch over by themselves at the next launch. Tests: `test_windows_update.py`.
+- Updates only reinstall the package when its dependencies changed. A plain code update just restarts, so it's quicker.
+- If the reinstall still can't finish (an older Jarvis window is open), Jarvis restarts into the new code anyway and finishes the install at the next launch, instead of stopping at "pip install failed".
+- Leftover `~arness_jarvis-*.dist-info` folders from earlier failed updates are cleaned up.
+
 ## 2026-10-07 — upstream port `16961d6..2dfeb9f` (Jarvis 0.3.1)
 
 ### From upstream
