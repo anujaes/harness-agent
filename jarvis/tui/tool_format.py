@@ -18,6 +18,7 @@ import re
 from typing import Any
 
 _TITLES = {
+    "spawn_agents": "Parallel agents",
     "read_file": "Read",
     "read_document": "Read",
     "read_bundle": "Read",
@@ -90,6 +91,7 @@ _TITLES = {
 # One single-width glyph per tool family (no emoji — they render at
 # inconsistent widths across terminals). Colored by status in the row.
 _ICONS = {
+    "spawn_agents": "⇉",
     "read_file": "→", "read_document": "→", "read_bundle": "→",
     "resolve_context": "✦",
     "write_file": "←", "edit_file": "✎", "multi_edit": "✎",
@@ -213,6 +215,12 @@ def tool_args(name: str, raw_input: Any, width: int = 96) -> str:
     d = _norm(raw_input)
     c = lambda s, w=width: clip(s, w)  # noqa: E731
 
+    if name == "spawn_agents":
+        agents = d.get("agents") if isinstance(d.get("agents"), list) else []
+        names = [str(a.get("name") or "").strip() for a in agents if isinstance(a, dict)]
+        head = f"{len(agents)} agent{'' if len(agents) == 1 else 's'}"
+        names = [n for n in names if n]
+        return c(head + (" · " + ", ".join(names) if names else ""))
     if name == "read_file":
         s = short_path(d.get("path"))
         off, lim = d.get("offset") or 0, d.get("limit") or 0
@@ -371,6 +379,22 @@ def _head(lines: list[str], n: int, width: int) -> list[str]:
     return out
 
 
+_READ_MORE_RE = re.compile(r"\[showing lines (\d+)–(\d+)( of \d+)? — call read_file")
+
+
+def _edit_notes(text: str, width: int) -> list[str]:
+    """Warnings a write/edit result carries (files/tools.py) worth a row line."""
+    notes = []
+    m = re.search(r"\[warning: (\S+) no longer parses — (.*?)\. Fix this before moving on\.\]", text, re.S)
+    if m:
+        notes.append(clip(f"⚠ {m.group(1)} no longer parses — {m.group(2)}", width))
+    if "changed on disk since you last read it" in text:
+        notes.append("⚠ file had changed on disk since it was read")
+    if "matched with a consistent indentation shift" in text:
+        notes.append("re-indented to match the file")
+    return notes
+
+
 def is_error_output(out: str) -> bool:
     s = (out or "").lstrip()
     return s.startswith(("ERROR", "BLOCKED", "TIMEOUT", "USER DENIED"))
@@ -401,6 +425,10 @@ def tool_summary(name: str, raw_input: Any, output: str, width: int = 100) -> tu
     lines = stripped.splitlines()
     d = _norm(raw_input)
 
+    if name == "spawn_agents":
+        head = lines[0] if lines else "done"
+        head = re.sub(r"^Parallel agents:\s*", "", head)
+        return ([clip(head, width)], " not finished" in head and "done" not in head)
     if name == "run_bash":
         body = lines
         code = 0
@@ -443,20 +471,27 @@ def tool_summary(name: str, raw_input: Any, output: str, width: int = 100) -> tu
     if name == "bg_kill":
         return ([clip(lines[0], width)] if lines else ["stopped"], False)
     if name == "read_file":
+        if stripped == "[empty file]":
+            return (["Empty file"], False)
+        m = _READ_MORE_RE.search(stripped)
+        if m:
+            return ([f"Read lines {m.group(1)}–{m.group(2)}{m.group(3) or ''} · more with offset"], False)
+        if stripped.startswith("[offset"):
+            return ([clip(stripped.strip("[]"), width)], False)
         return ([f"Read {_plural(len(lines), 'line')}"], False)
     if name == "write_file":
         n = len(str(d.get("content") or "").splitlines())
-        return ([f"Wrote {_plural(n, 'line')}" if n else "Written"], False)
+        return ([f"Wrote {_plural(n, 'line')}" if n else "Written"] + _edit_notes(stripped, width), False)
     if name == "edit_file":
         m = re.search(r"\((\d+) replacements?\)", stripped)
         n = int(m.group(1)) if m else 1
-        return ([f"Applied {_plural(n, 'edit')}"], False)
+        return ([f"Applied {_plural(n, 'edit')}"] + _edit_notes(stripped, width), False)
     if name == "multi_edit":
         m = re.search(r"(\d+) succeeded,\s*(\d+) failed", stripped)
         if m:
             ok, bad = int(m.group(1)), int(m.group(2))
             msg = f"Applied {_plural(ok, 'edit')}" + (f", {bad} failed" if bad else "")
-            return ([msg], bad > 0 and ok == 0)
+            return ([msg] + _edit_notes(stripped, width), bad > 0 and ok == 0)
         return (["Applied edits"], False)
     if name in ("glob_files", "list_dir", "fast_find", "rank_files"):
         if stripped.startswith("no matches"):

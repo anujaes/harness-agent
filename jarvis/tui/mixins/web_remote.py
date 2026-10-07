@@ -126,6 +126,14 @@ class WebRemoteMixin:
         except Exception:
             return "auto"
 
+    def _keep_awake_pref(self) -> bool:
+        try:
+            from ...storage.settings import get_settings
+
+            return bool(get_settings().get("web.keep_awake", True))
+        except Exception:
+            return True
+
     def _on_ui_thread(self, fn, *args) -> None:
         """Run ``fn`` on the UI thread from anywhere (tunnel threads call this)."""
         if threading.get_ident() == getattr(self, "_thread_id", None):
@@ -151,6 +159,7 @@ class WebRemoteMixin:
         tunnel = Tunnel(
             provider=provider,
             port=int(state.web_port),
+            keep_awake=self._keep_awake_pref(),
             on_change=lambda t: self._on_ui_thread(self._on_tunnel_change, t),
         )
         self._web_tunnel = tunnel
@@ -161,7 +170,7 @@ class WebRemoteMixin:
     def _on_tunnel_change(self, tunnel) -> None:
         from urllib.parse import urlparse
 
-        from ...web.tunnel import public_link
+        from ...web.tunnel import awake_label, public_link
 
         if tunnel is not getattr(self, "_web_tunnel", None):
             return  # an older tunnel we already replaced / stopped
@@ -172,7 +181,9 @@ class WebRemoteMixin:
             esc = _rich_escape(self._web_public_link)
             self._tui_console.print(
                 f"[{ui.OK}]🌍 anywhere[/]  [link={esc}]{esc}[/link]  "
-                f"[{ui.FG_DIM}]· works from any network · /web local turns it off[/]"
+                f"[{ui.FG_DIM}]· works from any network"
+                f"{' · ' + awake_label() if tunnel.awake else ''}"
+                f" · /web local turns it off[/]"
             )
             self.notify("Anywhere link is live — scan it from /web", timeout=3)
         elif tunnel.status == "error":
@@ -464,10 +475,9 @@ class WebRemoteMixin:
         bridge = self._web_bridge
         if bridge is None:
             return
-        from ...media import queue_label
+        from ... import prompt_queue
 
-        items = [queue_label(msg) for msg in state.prompt_queue]
-        bridge.emit("queue", {"items": [i for i in items if i]})
+        bridge.emit("queue", {"items": prompt_queue.labels(), "entries": prompt_queue.public()})
 
     def _handle_web_submit(self, text: str, files: list[str] | None = None) -> None:
         text = (text or "").strip()
@@ -552,7 +562,7 @@ class WebRemoteMixin:
         result = apply_settings(data)
         if result:
             parts = []
-            if "think_mode" in result:
+            if "error" not in result and "think_mode" in result:
                 parts.append(f"think {'on' if result['think_mode'] else 'off'}")
             if "show_internal" in result:
                 parts.append(f"trace {'on' if result['show_internal'] else 'off'}")
@@ -564,6 +574,9 @@ class WebRemoteMixin:
 
     def _handle_web_action(self, action: str, data: dict) -> dict:
         from ...web.actions_api import run_web_action
+
+        if action == "queue":  # edit / remove / send now a queued message
+            return self._handle_web_queue(data)
 
         mux = getattr(self, "_web_mux", None)
         ctx = mux.suppress_broadcast() if mux is not None else nullcontext()
@@ -597,6 +610,13 @@ class WebRemoteMixin:
                     result = dict(result)
                     result["stopped"] = stopped
                     self._tui_console.print(f"[{ui.FG_DIM}]⏹ web · {stopped}[/]")
+
+            if action == "cwd_change":  # the terminal shows the folder too (footer, context strip)
+                try:
+                    self._render_footer()
+                    self._slow_refresh()
+                except Exception:
+                    pass
 
             provider_change = action.startswith("provider_")
             if action == "model_select" or provider_change:

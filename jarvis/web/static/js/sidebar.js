@@ -1,9 +1,9 @@
-/** Sidebar: model + agent, reasoning and transcript switches, recent sessions, usage */
+/** Sidebar: reasoning and transcript switches, recent sessions, usage */
 import { $, escapeHtml, formatCount, debounce, countTo, animateEl, SPRING } from './utils.js';
 import { icon } from './icons.js';
 import { store, subscribe } from './store.js';
 import { fetchSessions } from './api.js';
-import { EFFORTS, EFFORT_LABELS, EFFORT_HINTS } from './effort.js';
+import { EFFORT_LABELS, EFFORT_HINTS, effortLevels, effortNow, thinkInfo, thinkSwitchState } from './effort.js';
 import {
   newChat,
   onSessionChange,
@@ -12,18 +12,8 @@ import {
   toggleSetting,
 } from './actions.js';
 import { toggleTheme, isLightTheme, openAppearance } from './theme.js';
-import { onProvidersChange } from './providers.js';
 import { closeInspector, isDocked, isInspectorOpen } from './inspector.js';
-
-const PROVIDER_LABELS = {
-  anthropic: 'Anthropic',
-  openrouter: 'OpenRouter',
-  opencode: 'OpenCode Go',
-  opencode_zen: 'OpenCode Zen',
-  openai_codex: 'ChatGPT (Codex)',
-};
-/** Filled from /api/providers: "Claude Pro / Max" rather than "Anthropic". */
-let activeProviderLabel = '';
+import { closedProjectFor, projectForSession, switchProject } from './projects.js';
 
 let openPicker = () => {};
 let recentSig = '';
@@ -52,27 +42,46 @@ function closeOnNarrow() {
 function renderEffort(s) {
   const box = $('effort');
   if (!box) return;
-  const on = !!s.session.think_mode;
-  const current = s.session.think_effort;
-  if (!box.childElementCount) {
-    box.innerHTML = EFFORTS.filter((e) => e !== 'none').map((e) => `
+  const info = thinkInfo(s.session);
+  const levels = effortLevels(s.session);
+  const now = effortNow(s.session);
+  // Only the levels this model takes; a model with none (on/off only, always
+  // on, no thinking) gets a line saying so instead of a control that lies.
+  const sig = levels.join(',');
+  if (box.dataset.levels !== sig) {
+    box.dataset.levels = sig;
+    box.style.setProperty('--n', String(Math.max(levels.length, 1)));
+    box.dataset.n = String(levels.length);
+    box.innerHTML = levels.map((e) => `
       <button type="button" class="effort-opt" role="radio" data-effort="${e}" title="${escapeHtml(EFFORT_HINTS[e])}" aria-checked="false">${escapeHtml(EFFORT_LABELS[e])}</button>`).join('');
     box.querySelectorAll('.effort-opt').forEach((btn) => {
       btn.addEventListener('click', () => {
-        if (btn.dataset.effort !== store.session.think_effort || !store.session.think_mode) setEffort(btn.dataset.effort);
+        const cur = effortNow(store.session);
+        if (btn.dataset.effort !== cur.level || !cur.on) setEffort(btn.dataset.effort);
       });
     });
   }
-  box.classList.toggle('is-off', !on);
+  box.hidden = !levels.length;
+  box.classList.toggle('is-off', !now.on);
+  const hint = $('effort-hint');
+  if (hint) {
+    let text = '';
+    if (info && !levels.length) text = info.summary || '';
+    else if (info?.note) text = info.note;
+    else if (info && info.mode === 'unknown') text = 'Levels for this model aren\u2019t published \u2014 all are offered.';
+    hint.textContent = text;
+    hint.hidden = !text;
+    hint.classList.toggle('is-warn', !!info?.note);
+  }
   const opts = [...box.querySelectorAll('.effort-opt')];
   opts.forEach((btn) => {
-    btn.setAttribute('aria-checked', String(on && btn.dataset.effort === current));
+    btn.setAttribute('aria-checked', String(now.on && btn.dataset.effort === now.level));
     btn.disabled = s.pendingToggle === 'think_effort';
   });
   // One thumb slides between the options instead of each lighting up.
-  const idx = opts.findIndex((b) => b.dataset.effort === current);
+  const idx = opts.findIndex((b) => b.dataset.effort === now.level);
   if (idx >= 0) box.style.setProperty('--i', String(idx));
-  box.classList.toggle('has-thumb', on && idx >= 0);
+  box.classList.toggle('has-thumb', now.on && idx >= 0);
   if (!box.classList.contains('is-ready')) requestAnimationFrame(() => box.classList.add('is-ready'));
 }
 
@@ -85,23 +94,18 @@ function renderSwitches(s) {
     el.classList.toggle('is-pending', !!pendingKey && s.pendingToggle === pendingKey);
     el.closest('.switch-row')?.classList.toggle('is-disabled', disabled);
   };
-  set('sw-think', s.session.think_mode, 'think_mode');
+  // The switch can't be turned off for a model that always thinks, nor on for
+  // one that can't think — say why instead of letting the server refuse.
+  const sw = thinkSwitchState(s.session);
+  const info = thinkInfo(s.session);
+  set('sw-think', info ? info.on : s.session.think_mode, 'think_mode', sw.disabled);
+  const swRow = $('sw-think')?.closest('.switch-row');
+  if (swRow) swRow.title = sw.why;
   set('sw-trace', s.session.show_internal, 'show_internal');
   set('sw-thoughts', s.showThoughts && s.session.show_internal, null, !s.session.show_internal);
   set('sw-auto', s.session.auto_approve, 'auto_approve');
   const sub = $('thoughts-sub');
   if (sub) sub.textContent = s.session.show_internal ? 'Only on this device' : 'Turn on tool trace first';
-}
-
-function renderCards(s) {
-  const model = s.session.model || '—';
-  $('model-name').textContent = model;
-  $('model-name').title = model;
-  $('model-provider').textContent = activeProviderLabel || PROVIDER_LABELS[s.session.provider] || s.session.provider || '';
-
-  const agent = s.session.agent;
-  $('agent-name').textContent = agent || 'No agent';
-  $('agent-sub').textContent = agent ? 'Active profile' : 'Base system prompt';
 }
 
 function renderUsage(s) {
@@ -111,8 +115,22 @@ function renderUsage(s) {
   countTo($('use-in'), s.session.tokens_in, formatCount, animate);
   countTo($('use-out'), s.session.tokens_out, formatCount, animate);
   countTo($('use-tools'), s.session.tool_calls, formatCount, animate);
-  $('use-in').title = `${s.session.tokens_in} input tokens`;
   $('use-out').title = `${s.session.tokens_out} output tokens`;
+  // Prompt cache (Anthropic, Codex): how much of the latest prompt was
+  // served from cache — cheaper and faster than sending it fresh.
+  const tin = Number(s.session.tokens_in) || 0;
+  const cached = Number(s.session.tokens_cache_read) || 0;
+  const pct = cached && tin ? Math.min(100, Math.floor((cached * 100) / tin)) : 0;
+  const tip = pct
+    ? `${tin} input tokens in the latest prompt — ${cached} (${pct}%) read from the prompt cache`
+    : `${tin} input tokens`;
+  $('use-in').title = tip;
+  const badge = $('use-in-cache');
+  if (badge) {
+    badge.hidden = !pct;
+    badge.textContent = pct ? `⚡${pct}%` : '';
+    badge.title = tip;
+  }
 }
 
 function renderThemeButton() {
@@ -134,7 +152,6 @@ function renderThemeButton() {
 }
 
 function render(s) {
-  renderCards(s);
   renderSwitches(s);
   renderEffort(s);
   renderUsage(s);
@@ -146,23 +163,6 @@ function render(s) {
     refreshRecent();
   }
   markActiveRecent(s.session.session_id);
-}
-
-function renderProviders(data) {
-  const connected = (data.providers || []).filter((p) => p.connected && p.kind !== 'free');
-  activeProviderLabel = data.active_label || '';
-  $('model-provider').textContent = activeProviderLabel || PROVIDER_LABELS[store.session.provider] || '';
-  const name = $('providers-name');
-  const line = $('providers-line');
-  if (!name || !line) return;
-  if (!connected.length) {
-    name.textContent = 'Add a provider';
-    line.textContent = 'Free tier now · sign in or paste a key';
-  } else {
-    name.textContent = `${connected.length} connected`;
-    line.textContent = connected.map((p) => p.label).join(', ');
-  }
-  $('providers-card').title = connected.length ? `Connected: ${line.textContent}` : 'Sign in or paste an API key';
 }
 
 // ─── Recent sessions ──────────────────────────────────────────────────────
@@ -179,26 +179,41 @@ async function loadRecent() {
   if (!list.childElementCount) list.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>';
   try {
     const data = await fetchSessions(5);
-    const sessions = data.sessions || [];
-    const sig = JSON.stringify(sessions.map((x) => [x.id, x.title, x.msg_count, x.updated_label]));
+    const sessions = (data.sessions || []).map((x) => ({
+      ...x,
+      // Still the live chat of another running project: open it there, never twice.
+      openIn: projectForSession(x.id),
+      // Its project was closed: say where it came from.
+      from: closedProjectFor(x.id),
+    }));
+    const sig = JSON.stringify(sessions.map((x) => [x.id, x.title, x.msg_count, x.updated_label, x.openIn?.id, x.from]));
     if (sig === recentSig && list.querySelector('.recent-row')) return;
     recentSig = sig;
     if (!sessions.length) {
       list.innerHTML = '<p class="recent-empty">Saved sessions show up here.</p>';
       return;
     }
-    list.innerHTML = sessions.map((x, i) => `
-      <button type="button" class="recent-row" role="listitem" data-sid="${x.id}" title="${escapeHtml(x.title)}" style="--i:${i}">
+    list.innerHTML = sessions.map((x, i) => {
+      const tag = x.openIn
+        ? `<span class="rr-tag is-live" title="Open in ${escapeHtml(x.openIn.project)} — click to switch there">${escapeHtml(x.openIn.project)}</span>`
+        : x.from ? `<span class="rr-tag" title="From ${escapeHtml(x.from)}, which was closed">${escapeHtml(x.from)}</span>` : '';
+      return `
+      <button type="button" class="recent-row" role="listitem" data-sid="${x.id}" ${x.openIn ? `data-project="${escapeHtml(x.openIn.id)}"` : ''} title="${escapeHtml(x.title)}" style="--i:${i}">
         <span class="rr-dot" aria-hidden="true"></span>
         <span class="rr-body">
           <span class="rr-title">${escapeHtml(x.title)}</span>
-          <span class="rr-meta">${escapeHtml(x.updated_label || '')}${x.msg_count ? `, ${x.msg_count} messages` : ''}</span>
+          <span class="rr-meta">${tag}${escapeHtml(x.updated_label || '')}${x.msg_count ? `, ${x.msg_count} messages` : ''}</span>
         </span>
-      </button>`).join('');
+      </button>`;
+    }).join('');
     list.querySelectorAll('.recent-row').forEach((row) => {
       row.addEventListener('click', async () => {
         if (row.dataset.sid === String(store.session.session_id)) {
           closeOnNarrow();
+          return;
+        }
+        if (row.dataset.project) {
+          switchProject(row.dataset.project);
           return;
         }
         row.classList.add('is-active');
@@ -230,12 +245,9 @@ export function initSidebar({ onOpenPicker }) {
     const res = await newChat();
     if (res.ok) {
       closeOnNarrow();
-      $('prompt')?.focus();
+      if (!res.beside) $('prompt')?.focus(); // beside: the "Starting a new chat" dialog is up
     }
   });
-  $('model-card')?.addEventListener('click', () => { closeOnNarrow(); openPicker('model'); });
-  $('agent-card')?.addEventListener('click', () => { closeOnNarrow(); openPicker('agent'); });
-  $('providers-card')?.addEventListener('click', () => { closeOnNarrow(); openPicker('provider'); });
   $('all-sessions')?.addEventListener('click', () => { closeOnNarrow(); openPicker('session'); });
   $('open-skills')?.addEventListener('click', () => { closeOnNarrow(); openPicker('skill'); });
   $('open-commands')?.addEventListener('click', () => { closeOnNarrow(); openPicker('command'); });
@@ -256,5 +268,4 @@ export function initSidebar({ onOpenPicker }) {
   subscribe(render);
   render(store);
   renderThemeButton();
-  onProvidersChange(renderProviders);
 }

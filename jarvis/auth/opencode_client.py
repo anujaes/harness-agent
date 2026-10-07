@@ -80,11 +80,18 @@ def _opencode_reasoning_options(model: str, thinking: dict | None) -> dict[str, 
 
     mode = thinking.get("type")
     if mode == "enabled":
-        effort = str(thinking.get("effort") or "high").lower()
-        if effort not in OPENCODE_ALLOWED_THINK_EFFORTS or effort == "none":
-            effort = "high"
-        effort = _EFFORT_API_MAP.get(effort, effort)
-        opts: dict[str, Any] = {"reasoning_effort": effort}
+        if thinking.get("effort_exact"):
+            # The level was checked against this model's own list (thinking_caps):
+            # send it as is — no xhigh→high squeeze — and none at all for a model
+            # that has no levels (an on/off one).
+            effort = str(thinking.get("effort") or "").lower()
+            opts: dict[str, Any] = {"reasoning_effort": effort} if effort else {}
+        else:
+            effort = str(thinking.get("effort") or "high").lower()
+            if effort not in OPENCODE_ALLOWED_THINK_EFFORTS or effort == "none":
+                effort = "high"
+            effort = _EFFORT_API_MAP.get(effort, effort)
+            opts = {"reasoning_effort": effort}
         # MiniMax models need reasoning_split to separate thinking from content
         # in streaming — without it the reasoning bleeds into text content.
         if _is_minimax_model(model):
@@ -372,6 +379,7 @@ class _OpenCodeStream:
         self._collected_text: list[str] = []
         self._collected_reasoning: list[str] = []
         self._collected_tool_calls: dict[int, dict] = {}
+        self._tool_deltas: list[tuple] = []  # (index, name, args delta) from the last chunk
         self._usage_obj = None
         self._chunk_queue: queue.Queue = queue.Queue()
         self._reader_started = False
@@ -419,14 +427,17 @@ class _OpenCodeStream:
 
     def _process_chunk(self, chunk) -> tuple[Optional[str], Optional[str]]:
         """Extract text/reasoning deltas and accumulate tool call fragments."""
-        delta = chunk.choices[0].delta if chunk.choices else None
-        if delta is None:
-            return None, None
         # Usage on streaming chunks lives at the root chunk level, NOT on delta.
         # Some providers emit usage on every chunk; others only on the final chunk.
         # Always overwrite so the LAST chunk with usage wins (final totals).
-        if hasattr(chunk, "usage") and chunk.usage is not None:
+        # Read it BEFORE the choices check: the final usage chunk usually has
+        # `choices: []` (OpenAI spec; Zen does this), and skipping it left every
+        # turn at 0 tokens in / 0 out.
+        if getattr(chunk, "usage", None) is not None:
             self._usage_obj = chunk.usage
+        delta = chunk.choices[0].delta if chunk.choices else None
+        if delta is None:
+            return None, None
         text = None
         reasoning = None
         reasoning_content = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
@@ -449,6 +460,9 @@ class _OpenCodeStream:
                         entry["name"] += tc_chunk.function.name
                     if tc_chunk.function.arguments:
                         entry["arguments"] += tc_chunk.function.arguments
+                        self._tool_deltas.append((idx, entry["name"], tc_chunk.function.arguments))
+                    elif tc_chunk.function.name:
+                        self._tool_deltas.append((idx, entry["name"], ""))
         return text, reasoning
 
     def _build_final(self) -> _FakeMessage:
@@ -510,11 +524,14 @@ class _OpenCodeStream:
             chunk, last_progress = self._take_next_chunk(last_progress=last_progress)
             if chunk is None:
                 break
+            self._tool_deltas = []
             text, reasoning = self._process_chunk(chunk)
             if reasoning:
                 yield "thinking", reasoning
             if text:
                 yield "text", text
+            for tool_delta in self._tool_deltas:
+                yield "tool_input", tool_delta
         self._final = self._build_final()
 
     @property
@@ -621,11 +638,19 @@ class _OpenCodeResponsesStream:
                 slot = self._tool_calls.setdefault(
                     item_id, {"id": item_id, "name": "", "arguments": ""}
                 )
-                slot["arguments"] += getattr(event, "delta", "") or ""
+                piece = getattr(event, "delta", "") or ""
+                slot["arguments"] += piece
+                if piece:
+                    yield "tool_input", (item_id, slot.get("name", ""), piece)
             elif etype in ("response.output_item.added", "response.output_item.done"):
                 item = getattr(event, "item", None)
                 if item is not None and getattr(item, "type", "") == "function_call":
                     self._record_function_call(item)
+                    if etype == "response.output_item.added":
+                        yield "tool_input", (
+                            getattr(item, "id", "") or getattr(item, "call_id", ""),
+                            getattr(item, "name", "") or "", "",
+                        )
             elif etype == "response.completed":
                 resp = getattr(event, "response", None)
                 usage = getattr(resp, "usage", None) if resp is not None else None
@@ -858,6 +883,8 @@ class _OpenCodeMessages:
         )
         if reasoning_options:
             kwargs.update(reasoning_options)
+        if owner is not None and model in owner.effort_refused:
+            kwargs.pop("reasoning_effort", None)
 
         oai_tools = _anthropic_tools_to_openai(tools) if tools else []
         # Free Harness Agent tier gate: the Zen gateway 403s (FreeTierError)
@@ -885,19 +912,35 @@ class _OpenCodeMessages:
 
         try:
             response = self._create_completion(**kwargs)
-        except Exception as e:
-            err = str(e)
-            # Don't silently swallow reasoning_content errors — they need
-            # the above fix, not a tool-removal retry.
-            if oai_tools and ("reasoning_content" not in err.lower() and
-                              ("invalid_request" in err or
-                               "tool" in err.lower() or
-                               "function" in err.lower())):
-                # Model doesn't support tool use — retry without tools
-                kwargs.pop("tools", None)
-                response = self._create_completion(**kwargs)
-            else:
-                raise
+        except Exception as first:
+            response, e = None, first
+            if "reasoning_effort" in kwargs and getattr(e, "status_code", None) == 400:
+                # Some upstreams 400 a reasoning_effort they don't take — "none"
+                # (thinking off, and every prompt enhance) on fledge-alpha-free /
+                # space-bunny-free, 2026-10. Retry without it, tools kept.
+                kwargs.pop("reasoning_effort")
+                try:
+                    response = self._create_completion(**kwargs)
+                except Exception as second:
+                    e = second
+                else:
+                    if owner is not None:
+                        owner.effort_refused.add(model)
+            if response is None:
+                err = str(e)
+                # Don't silently swallow reasoning_content errors — they need
+                # the above fix, not a tool-removal retry. Never on the free
+                # tier: without its bash/read gate tools it 403s FreeTierError,
+                # hiding the real error.
+                if oai_tools and not gate and ("reasoning_content" not in err.lower() and
+                                               ("invalid_request" in err or
+                                                "tool" in err.lower() or
+                                                "function" in err.lower())):
+                    # Model doesn't support tool use — retry without tools
+                    kwargs.pop("tools", None)
+                    response = self._create_completion(**kwargs)
+                else:
+                    raise e
 
         stream = _OpenCodeStream(
             response,
@@ -950,6 +993,9 @@ class OpenCodeClient:
         # supplied none. Used by the free Harness Agent tier, whose gateway
         # only accepts requests carrying tools named "bash"+"read".
         self.gate_tools: list[dict] = list(gate_tools) if gate_tools else []
+        # Models whose upstream 400'd a reasoning_effort and took the request
+        # without it: never sent to them again this session.
+        self.effort_refused: set[str] = set()
         hdrs = dict(default_headers or {})
         self._oai = OpenAI(
             api_key=api_key,

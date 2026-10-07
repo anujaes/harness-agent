@@ -16,6 +16,7 @@ import { openModal } from './modal.js';
 import { renderMarkdown, applyMarkdownLinks } from './markdown.js';
 import { openChange } from './changes.js';
 import { renderFiles, renderToolImages } from './media.js';
+import { isAgentsTool, initAgentsCard, paintAgents } from './agents.js';
 
 const chat = () => $('chat');
 const scroller = () => $('chat-scroll');
@@ -62,6 +63,7 @@ export function initChat() {
     }
   }, { passive: true });
   jump?.addEventListener('click', () => scrollToBottom(true, true));
+  watchChrome();
   syncThoughtsVisibility();
   initToolOutputModal();
   // Tool rows are also clickable targets for the Activity tab's "jump here".
@@ -72,6 +74,36 @@ export function initChat() {
       openToolOutput(btn.dataset.full);
     }
   });
+}
+
+/**
+ * Frosted glass floats the top bar and the dock over the transcript
+ * (layout.css), which pads and fades by their measured sizes: --top-h,
+ * --dock-h, and the composer's edges from the bottom (--comp-top /
+ * --comp-bot). Measured in every mode, so switching glass on is instant.
+ * While you're at the bottom, a dock that grows (a multi-line draft, chips,
+ * the activity row) keeps the latest message in view instead of covering it.
+ */
+function watchChrome() {
+  const main = document.querySelector('.main');
+  const top = document.querySelector('.topbar');
+  const dock = document.querySelector('.dock');
+  const comp = $('composer');
+  const sc = scroller();
+  if (!main || !top || !dock || !comp || !sc) return;
+  const measure = () => {
+    const stuck = stickToBottom;
+    const compTop = dock.offsetHeight - comp.offsetTop;
+    main.style.setProperty('--top-h', `${top.offsetHeight}px`);
+    main.style.setProperty('--dock-h', `${dock.offsetHeight}px`);
+    main.style.setProperty('--comp-top', `${compTop}px`);
+    main.style.setProperty('--comp-bot', `${compTop - comp.offsetHeight}px`);
+    if (stuck) sc.scrollTop = sc.scrollHeight;
+  };
+  measure();
+  if (typeof ResizeObserver === 'undefined') return;
+  const ro = new ResizeObserver(measure);
+  [main, top, dock, comp].forEach((el) => ro.observe(el));
 }
 
 function hideJump() {
@@ -228,10 +260,19 @@ function copyAction(getText) {
   });
 }
 
-function appendUser(text, files = []) {
+function appendUser(text, files = [], { steered = false } = {}) {
   removeTyping();
   const row = document.createElement('div');
   row.className = 'turn-you';
+  if (steered) {
+    // "Send now": it reached Jarvis between two steps of the running reply.
+    row.classList.add('is-steered');
+    const tag = document.createElement('div');
+    tag.className = 'you-steer';
+    tag.innerHTML = `${icon('corner-down-right')}<span>Sent while Jarvis worked</span>`;
+    tag.title = 'Jarvis read this between two steps, without waiting for its reply to finish';
+    row.appendChild(tag);
+  }
   if (files.length) {
     // Photos and files sit above the text, like a message with attachments.
     row.classList.add('has-files');
@@ -366,6 +407,121 @@ function appendNotice(text) {
   chat().appendChild(markNew(el));
 }
 
+// ─── /stats card ──────────────────────────────────────────────────────────
+
+/** 39 → "39s", 252 → "4m 12s", 3780 → "1h 03m" */
+function statsElapsed(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  if (s < 60) return `${s}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${String(m).padStart(2, '0')}m`;
+  return `${m}m ${String(s % 60).padStart(2, '0')}s`;
+}
+
+/** Whole cents once there's real money; four places for fractions of a cent. */
+function statsCost(v) {
+  const n = Number(v) || 0;
+  return `$${n === 0 || n >= 0.01 ? n.toFixed(2) : n.toFixed(4)}`;
+}
+
+const statsNum = (v) => (Number(v) || 0).toLocaleString();
+
+/** "/Users/me/x/y" → "~/x/y" when the home folder is recognisable. */
+function statsPath(p) {
+  return String(p || '').replace(/^\/(Users|home)\/[^/]+(?=\/|$)/, '~');
+}
+
+/** Share of the latest prompt read from the prompt cache, 0–100. */
+function statsCachePct(d) {
+  const tin = Number(d.tokens_in) || 0;
+  const read = Number(d.cache_read) || 0;
+  return tin && read ? Math.min(100, Math.floor((read * 100) / tin)) : 0;
+}
+
+/** Same lines as the terminal panel, for Copy. */
+function statsText(d) {
+  return [
+    'Session stats',
+    `Elapsed      ${statsElapsed(d.elapsed_s)}`,
+    `Messages     ${d.messages ?? 0}`,
+    `Tool calls   ${d.tool_calls ?? 0}`,
+    `Tokens       ${d.tokens_in ?? 0} in / ${d.tokens_out ?? 0} out / ${d.tokens_total ?? 0} total`,
+    ...(Number(d.cache_read) ? [`Prompt cache ${statsCachePct(d)}% of the last prompt (${d.cache_read} read / ${d.cache_write ?? 0} written)`] : []),
+    `Est. cost    ${statsCost(d.cost)}`,
+    `Model        ${d.model || '—'}${d.provider ? ` (${d.provider})` : ''}`,
+    `Folder       ${d.cwd || '—'}`,
+    `Internals    ${d.internals ? 'shown' : 'hidden'}`,
+  ].join('\n');
+}
+
+/** `/stats` from the terminal or this page: a card instead of the panel as text. */
+export function appendStats(data) {
+  removeTyping();
+  const d = data || {};
+  const tin = Number(d.tokens_in) || 0;
+  const tout = Number(d.tokens_out) || 0;
+  const total = Number(d.tokens_total) || tin + tout;
+  const split = tin + tout;
+  const inPct = split ? (tin / split) * 100 : 0;
+  const at = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const tile = (ic, label, value, title = '') => `
+    <div class="stat"${title ? ` title="${escapeHtml(title)}"` : ''}>
+      <span class="stat-label">${icon(ic)}${escapeHtml(label)}</span>
+      <span class="stat-value">${escapeHtml(value)}</span>
+    </div>`;
+  const row = (ic, label, value, { mono = false, title = '' } = {}) => `
+    <div class="stats-row">
+      <dt>${icon(ic)}${escapeHtml(label)}</dt>
+      <dd class="${mono ? 'is-mono' : ''}"${title ? ` title="${escapeHtml(title)}"` : ''}>${value}</dd>
+    </div>`;
+
+  const el = document.createElement('div');
+  el.className = 'stats-entry';
+  el.innerHTML = `
+    <section class="stats-card" aria-label="Session stats">
+      <header class="stats-head">
+        <span class="stats-glyph" aria-hidden="true">${icon('chart-column')}</span>
+        <div class="stats-title">
+          <strong>Session stats</strong>
+          <span>As of ${escapeHtml(at)}</span>
+        </div>
+      </header>
+      <div class="stats-grid">
+        ${tile('timer', 'Elapsed', statsElapsed(d.elapsed_s))}
+        ${tile('message-square', 'Messages', statsNum(d.messages))}
+        ${tile('wrench', 'Tool calls', statsNum(d.tool_calls))}
+        ${tile('zap', 'Est. cost', statsCost(d.cost), `$${(Number(d.cost) || 0).toFixed(6)}`)}
+      </div>
+      <div class="stats-tokens">
+        <div class="stats-tokens-head">
+          <span class="stat-label">${icon('arrow-right-left')}Tokens</span>
+          <span class="stats-tokens-total"><b>${escapeHtml(statsNum(total))}</b> total</span>
+        </div>
+        <div class="stats-bar${split ? '' : ' is-empty'}" role="img" aria-label="${escapeHtml(`${statsNum(tin)} input, ${statsNum(tout)} output tokens`)}">
+          <span class="stats-fill"><i class="is-in" style="width:${inPct.toFixed(2)}%"></i><i class="is-out" style="width:${split ? (100 - inPct).toFixed(2) : 0}%"></i></span>
+        </div>
+        <div class="stats-legend">
+          <span><i class="is-in"></i>Input <b>${escapeHtml(statsNum(tin))}</b></span>
+          <span><i class="is-out"></i>Output <b>${escapeHtml(statsNum(tout))}</b></span>
+          ${statsCachePct(d) ? `<span class="stats-cache" title="${escapeHtml(`${statsNum(d.cache_read)} of the latest prompt's ${statsNum(tin)} tokens were read from the prompt cache`)}">${icon('zap')}From cache <b>${statsCachePct(d)}%</b></span>` : ''}
+        </div>
+      </div>
+      <dl class="stats-meta">
+        ${row('cpu', 'Model', `<span class="stats-model">${escapeHtml(d.model || '—')}</span>${d.provider ? `<span class="stats-sub">${escapeHtml(d.provider)}</span>` : ''}`, { title: d.model || '' })}
+        ${row('folder', 'Folder', escapeHtml(statsPath(d.cwd) || '—'), { mono: true, title: d.cwd || '' })}
+        ${row(d.internals ? 'eye' : 'eye-off', 'Internals', d.internals ? 'Shown' : 'Hidden')}
+      </dl>
+    </section>`;
+  const actions = document.createElement('div');
+  actions.className = 'msg-actions';
+  actions.append(copyAction(() => statsText(d)));
+  el.appendChild(actions);
+  chat().appendChild(markNew(el));
+  noteUnseen();
+  afterAppend();
+}
+
 // ─── Tool rows ────────────────────────────────────────────────────────────
 
 function toolsContainer() {
@@ -402,6 +558,10 @@ function toolKindIcon(name) {
 }
 
 function paintTool(row, data) {
+  if (row.classList.contains('agents')) {
+    paintAgents(row, data);
+    return;
+  }
   if (Array.isArray(data.images) && data.images.length) row._images = data.images;
   const id = String(data.id || row.dataset.id || '');
   if (id) row.dataset.id = id;
@@ -465,6 +625,13 @@ function createToolRow(data) {
       title: data.title || data.name || 'Tool',
       args: data.args || '',
     });
+  }
+  if (isAgentsTool(data.name)) {
+    // Parallel agents get their own card, outside the foldable tool group.
+    initAgentsCard(row, data);
+    agentBody().appendChild(markNew(row));
+    if (data.id) toolRows.set(String(data.id), row);
+    return row;
   }
   if (data.status === 'error' && data.summary) row.classList.add('is-open');
   paintTool(row, data);
@@ -550,6 +717,12 @@ export function toolDone(data) {
     createToolRow({ ...data, status });
   }
   afterAppend();
+}
+
+/** Live board of a spawn_agents call (`agents` event). */
+export function updateAgents(board) {
+  const row = board?.id && toolRows.get(String(board.id));
+  if (row?.isConnected && row.classList.contains('agents')) paintAgents(row, { agents: board });
 }
 
 /** Turn ended or was cancelled: nothing is running any more. */
@@ -670,7 +843,7 @@ function appendEntry(entry) {
   const text = String(entry.text ?? '').trim();
   switch (role) {
     case 'you':
-      if (text || entry.attachments?.length) appendUser(text, entry.attachments || []);
+      if (text || entry.attachments?.length) appendUser(text, entry.attachments || [], { steered: !!entry.steered });
       break;
     case 'assistant':
       if (text) appendAssistant(text, entry.title);
@@ -690,7 +863,7 @@ function appendEntry(entry) {
 }
 
 /** A committed message from the session (live). `attachments`: files sent with a prompt. */
-export function appendMessage(role, text, title, attachments) {
+export function appendMessage(role, text, title, attachments, { steered = false } = {}) {
   const r = normalizeRole(role);
   const value = String(text ?? '').trim();
   const files = r === 'you' && Array.isArray(attachments) ? attachments : [];
@@ -702,7 +875,7 @@ export function appendMessage(role, text, title, attachments) {
     return;
   }
   if (r === 'you') finalizeLive();
-  appendEntry({ role: r, text: value, title, attachments: files });
+  appendEntry({ role: r, text: value, title, attachments: files, steered });
   if (r !== 'thinking') noteUnseen();
   afterAppend({ scroll: true });
   if (r === 'you') scrollToBottom(true);

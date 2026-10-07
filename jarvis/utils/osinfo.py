@@ -307,3 +307,54 @@ CREATE_NEW_PROCESS_GROUP = 0x00000200 if IS_WINDOWS else 0
 def hidden_subprocess_kwargs() -> dict:
     """``subprocess`` kwargs that suppress helper console windows on Windows."""
     return {"creationflags": CREATE_NO_WINDOW} if IS_WINDOWS else {}
+
+
+# OpenProcess right that is enough to read a process's exit code.
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+# GetExitCodeProcess value while the process is still running.
+_STILL_ACTIVE = 259
+# OpenProcess error for a process that exists but belongs to someone else.
+_ERROR_ACCESS_DENIED = 5
+
+
+def pid_alive(pid: int) -> bool:
+    """Whether a process with id ``pid`` is running. Never signals it.
+
+    POSIX uses ``os.kill(pid, 0)``. That idiom must not be used on Windows,
+    where ``os.kill`` with any signal other than Ctrl+C/Ctrl+Break calls
+    ``TerminateProcess`` — the "check" would kill the process. There the
+    process is opened for a query and its exit code read instead.
+    """
+    if pid <= 0:
+        return False
+    if not IS_WINDOWS:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # exists, owned by someone else
+        except OSError:
+            return False
+        return True
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        # A protected / other-session process can't be opened but does exist.
+        return ctypes.get_last_error() == _ERROR_ACCESS_DENIED
+    try:
+        code = wintypes.DWORD()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        # An exited process whose handle is still held somewhere stays openable;
+        # only STILL_ACTIVE means it is really running.
+        return code.value == _STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)

@@ -33,6 +33,11 @@ export const ACCENTS = [
 ];
 
 const systemLight = window.matchMedia('(prefers-color-scheme: light)');
+/** System "Reduce transparency": frosted glass keeps its palette, panels go solid (tokens.css). */
+const lessTransparency = window.matchMedia('(prefers-reduced-transparency: reduce)');
+
+const GLASS_SUB = 'Translucent panels; messages scroll under them';
+const GLASS_SUB_SOLID = 'Your system asks for less transparency, so panels stay solid';
 
 // ─── Custom accent: any colour, from the hue bar or the exact picker ─────
 
@@ -128,6 +133,7 @@ if (LEGACY_SOFT[savedMode]) {
 export const prefs = {
   mode: MODES.some((m) => m.id === savedMode) ? savedMode : 'dark',
   soft: storageGet('jarvis-soft', '0') === '1',
+  glass: storageGet('jarvis-glass', '0') === '1',
   accent: storageGet('jarvis-accent', 'green'),
   custom: validHex(storageGet('jarvis-accent-custom', '')) || CUSTOM_DEFAULT,
   alert: storageGet('jarvis-alert', '1') !== '0',
@@ -154,6 +160,10 @@ function apply() {
   root.dataset.theme = theme === 'soft' ? 'light' : theme;
   if (theme === 'soft') root.dataset.variant = 'soft';
   else delete root.dataset.variant;
+  // Frosted glass is an independent surface choice, not a theme: it rides
+  // on its own attribute so it combines with any mode AND soft contrast.
+  if (prefs.glass) root.dataset.surface = 'glass';
+  else delete root.dataset.surface;
   const custom = prefs.accent === 'custom';
   root.dataset.accent = custom || ACCENTS.some((a) => a.id === prefs.accent) ? prefs.accent : 'green';
   // A custom accent is set inline (beats every preset rule in tokens.css).
@@ -229,6 +239,28 @@ export function setSoft(on, src) {
   prefs.soft = on;
   storageSet('jarvis-soft', on ? '1' : '0');
   retheme(before, src);
+}
+
+/**
+ * Frosted glass. The resolved theme name is unchanged, so retheme() would
+ * skip the reveal — use withReveal directly so the switch still feels live.
+ */
+export function setGlass(on, src) {
+  if (prefs.glass === on) return;
+  prefs.glass = on;
+  storageSet('jarvis-glass', on ? '1' : '0');
+  withReveal(src, () => {
+    apply();
+    paintAppearance();
+  });
+}
+
+export function isGlass() {
+  return prefs.glass;
+}
+
+export function toggleGlass(src) {
+  setGlass(!prefs.glass, src);
 }
 
 export function setAccent(accent, src) {
@@ -372,6 +404,10 @@ function paintAppearance() {
   if (soft) soft.checked = prefs.soft;
   const softSub = $('soft-sub');
   if (softSub) softSub.textContent = SOFT_SUB[prefs.mode];
+  const glass = $('sw-glass');
+  if (glass) glass.checked = prefs.glass;
+  const glassSub = $('glass-sub');
+  if (glassSub) glassSub.textContent = lessTransparency.matches ? GLASS_SUB_SOLID : GLASS_SUB;
 
   paintAccents();
 
@@ -434,6 +470,7 @@ export function openAppearance() {
 
 export function initTheme() {
   apply();
+  lessTransparency.addEventListener?.('change', paintAppearance);
   systemLight.addEventListener?.('change', () => {
     if (prefs.mode === 'system') {
       apply();
@@ -460,6 +497,7 @@ export function initTheme() {
   $('accent-exact')?.addEventListener('input', (e) => setCustomAccent(e.target.value, { live: true }));
   $('accent-exact')?.addEventListener('change', paintAccents);
   $('sw-soft')?.addEventListener('change', (e) => setSoft(e.target.checked, e));
+  $('sw-glass')?.addEventListener('change', (e) => setGlass(e.target.checked, e));
   $('sw-alert')?.addEventListener('change', (e) => setAlert(e.target.checked));
   $('sw-compact')?.addEventListener('change', (e) => setCompact(e.target.checked));
 }

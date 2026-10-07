@@ -35,6 +35,13 @@ export async function runAction(action, data = {}, successMsg = '') {
 }
 
 export async function newChat() {
+  // A reply is running: one Jarvis holds one chat, so the new chat starts in
+  // another Jarvis — ask which folder, and the running one keeps going (Projects).
+  if (store.busy && store.session.cwd) {
+    const { openFolders } = await import('./folders.js');
+    openFolders({ newChat: true });
+    return { ok: true, beside: true };
+  }
   const res = await runAction('session_new', {});
   // A turn still running is stopped first (server side); say so.
   if (res.ok) showToast(res.stopped ? `New chat · ${res.stopped}` : 'New chat started');
@@ -44,14 +51,34 @@ export async function newChat() {
 let pending = 0;
 
 /** Optimistically change a server setting; reverts if the request fails. */
+/** The `think` description after a pending change, so the chip moves at once. */
+function optimisticThink(patch) {
+  const t = store.session.think;
+  if (!t || typeof t !== 'object') return {};
+  if ('think_effort' in patch && patch.think_effort !== 'none') {
+    return { think: { ...t, on: true, effort: patch.think_effort, current: patch.think_effort, label: patch.think_effort, note: '' } };
+  }
+  if (patch.think_mode === false || patch.think_effort === 'none') {
+    return { think: { ...t, on: false, effort: '', current: 'none', label: 'off', note: '' } };
+  }
+  if (patch.think_mode === true) {
+    const level = t.effort || store.session.think_effort;
+    return { think: { ...t, on: true, effort: t.levels?.length ? level : '', current: level, label: level, note: '' } };
+  }
+  return {};
+}
+
 export async function setSetting(patch, key) {
   const prev = { ...store.session };
-  patchSession(patch);
+  patchSession({ ...patch, ...(key === 'think_mode' || key === 'think_effort' ? optimisticThink(patch) : {}) });
   patchStore({ pendingToggle: key });
   pending += 1;
   try {
     const res = await updateSettings(patch);
     const snap = res?.settings;
+    // The server refused the choice (this model doesn't take it): its snapshot
+    // below holds the real state, so just say why.
+    if (res?.error) showToast(res.error, true);
     if (snap && typeof snap === 'object') {
       loadSnapshot(snap);
       // Trace adds or removes thinking entries from the transcript.

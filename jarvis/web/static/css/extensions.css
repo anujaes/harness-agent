@@ -1,8 +1,7 @@
 /* MCP servers + Skills: add by link, status cards, sign-in banner (mcp.js, skills.js, extui.js).
  * Builds on the Providers dialog's parts (.pv-row, .pv-field, .pv-msg, .pv-actions, …) in overlays.css. */
 
-.ext-card { max-width: 640px; }
-.ext-card .picker-head { border-bottom: 1px solid var(--line); padding-bottom: 14px; }
+/* Card size and header come from the dialog kit (.dlg-card, dialogs.css). */
 .ex-body { gap: 18px; }
 
 /* Sidebar chip: a dot when something needs the user. */
@@ -154,6 +153,67 @@
 .ex-st.is-failed .ex-dot { background: var(--danger); }
 .ex-st.is-connecting { color: var(--accent); }
 .ex-st.is-connecting .ex-dot { background: var(--accent); animation: breathe 1.2s ease-in-out infinite; }
+
+/* ─── On / off (mcp.js) ───────────────────────────────────────────────── */
+/* A server's switch sits beside its action; "off" keeps the card but quiets it. */
+.ex-switch { display: inline-grid; place-items: center; min-width: 44px; min-height: 32px; cursor: pointer; }
+.ex-switch .switch { width: 34px; height: 20px; }
+.ex-switch .switch::after { width: 14px; height: 14px; }
+.ex-switch .switch:checked::after { transform: translateX(14px); }
+.ex-switch .switch:checked:active:not(:disabled)::after { transform: translateX(9px); }
+.ex-switch .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ex-switch.is-busy .switch { opacity: 0.55; cursor: progress; }
+.ex-switch.is-busy .switch::after { animation: breathe 1s ease-in-out infinite; }
+/* Server on, but MCP as a whole is off: its knob stays right, colour drains. */
+.ex-switch.is-muted .switch:checked { background: var(--line-2); }
+
+.ex-st.is-off { color: var(--text-3); }
+.ex-st.is-off .ex-dot { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-3); }
+.ex-row.is-off { background: transparent; border-style: dashed; }
+.ex-row.is-off .pv-head .pv-mark,
+.ex-row.is-off .pv-head .mk-tile { filter: grayscale(1); opacity: 0.5; }
+.ex-row.is-off .ex-name { color: var(--text-2); }
+.ex-row.is-switching { transition: opacity 0.2s; opacity: 0.75; }
+.ex-off-note .ic { color: var(--text-3); }
+.ex-list.is-mcp-off .ex-row { border-style: dashed; }
+.mk-state.is-off { color: var(--text-3); }
+.mk-state.is-off .ic { width: 13px; height: 13px; }
+
+/* The MCP master switch on top of Your servers. */
+.mcp-power {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 0 12px;
+  padding: 12px 10px 12px 14px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r-card);
+  background: linear-gradient(135deg, var(--accent-soft), transparent 70%), var(--card);
+  transition: border-color 0.25s, background 0.25s;
+}
+.mcp-power.is-off { border-color: var(--warn-line); background: linear-gradient(135deg, var(--warn-soft), transparent 70%), var(--card); }
+.mcp-power-ic {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  transition: color 0.25s, background 0.25s, transform 0.35s var(--spring);
+}
+.mcp-power-ic .ic { width: 17px; height: 17px; }
+.mcp-power.is-off .mcp-power-ic { color: var(--warn); background: var(--warn-soft); }
+.mcp-power:has(.switch:active) .mcp-power-ic { transform: scale(0.92); }
+.mcp-power-text { display: flex; flex-direction: column; flex: 1; min-width: 0; line-height: 1.35; }
+.mcp-power-text strong { font-size: 14px; font-weight: 600; }
+.mcp-power-text span { font-size: 12.5px; color: var(--text-2); overflow: hidden; text-overflow: ellipsis; }
+.mcp-power.is-off .mcp-power-text span { color: var(--warn); }
+.ex-switch.is-lg .switch { width: 42px; height: 24px; }
+.ex-switch.is-lg .switch::after { width: 18px; height: 18px; }
+.ex-switch.is-lg .switch:checked::after { transform: translateX(18px); }
+.ex-switch.is-lg .switch:checked:active:not(:disabled)::after { transform: translateX(13px); }
 
 .pv-side .row-btn:not(.is-icon) { display: inline-flex; align-items: center; gap: 6px; }
 .pv-side .row-btn .ic { width: 13px; height: 13px; }
@@ -379,8 +439,251 @@
   .ex-sk { grid-template-columns: auto minmax(0, 1fr); }
   .ex-sk-meta { display: none; }
   .ex-row .pv-side .row-btn:not(.is-icon) { padding: 0 10px; }
+  /* Phones: the switch must stay, so the action goes icon-only (its label stays
+     for screen readers), the chevron goes (the whole head opens the card) and
+     the origin badge gives way before the server's name does. */
+  .ex-row .pv-side { gap: 2px; padding-right: 6px; }
+  .ex-row .pv-side .row-btn:not(.is-icon):has(.ic) { width: 34px; padding: 0; justify-content: center; }
+  .ex-row .pv-side .row-btn:has(.ic) > span {
+    position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
+  .ex-row .pv-head .pv-chev { display: none; }
+  .ex-row .ex-name { flex: 0 1 auto; min-width: 5ch; }
+  .ex-row .pv-title .badge { flex: 0 100 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mcp-power { padding: 10px 8px 10px 12px; gap: 10px; }
+  .mcp-power-text span { white-space: normal; }
   .pv-msg .btn { margin-left: 0; }
   .ex-list-head { align-items: flex-start; }
+}
+
+/* ─── MCP marketplace (mcp.js) ─────────────────────────────────────────── */
+/* Size: the shared .dlg-card (dialogs.css) — every list dialog is the same. */
+
+.dlg-tabs .mk-tabs { margin: 0; }
+.mk-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: var(--card-sunk);
+}
+.mk-tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 36px;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: var(--text-2);
+  font: 600 13.5px var(--font-ui);
+  transition: background 0.18s, color 0.18s, box-shadow 0.18s;
+}
+.mk-tab .ic { width: 15px; height: 15px; }
+.mk-tab:hover { color: var(--text); }
+.mk-tab[aria-selected="true"] { background: var(--card-hover); color: var(--text); box-shadow: 0 1px 0 var(--highlight) inset, 0 1px 3px rgba(0, 0, 0, 0.25); }
+.mk-tab:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus); }
+.mk-count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: var(--line);
+  color: var(--text-2);
+  font: 600 11.5px/20px var(--font-ui);
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
+}
+.mk-count.is-attn { background: var(--warn-soft); color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn-line); }
+
+
+/* Category chips: a second toolbar row (stays put while the list scrolls), one line
+   that scrolls sideways (never wraps, so filtering can't move the list). */
+.dlg-bar .mk-cats { margin-top: 10px; }
+.mk-cats {
+  display: flex;
+  gap: 6px;
+  margin: 0 -2px;
+  padding: 1px 2px 3px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+.mk-cats::-webkit-scrollbar { display: none; }
+.mk-cat {
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--text-2);
+  font: 500 12.5px var(--font-ui);
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.mk-cat:hover { color: var(--text); border-color: var(--line-2); background: var(--card-hover); }
+.mk-cat[aria-pressed="true"] { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); font-weight: 600; }
+.mk-cat:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--focus); }
+
+
+.mk-list { display: flex; flex-direction: column; gap: 6px; }
+/* The MCP body (mcp.js sets data-mode): list sections sit closer than the old cards did. */
+.ex-body[data-mode] { gap: 8px; }
+.ex-body[data-mode] > .ex-list { gap: 8px; }
+.mk-list > .dlg-section { margin-top: 8px; }
+.mk-list > .dlg-section:first-child { margin-top: 0; }
+.mk-row { flex-shrink: 0; scroll-margin: 8px 0; }
+.mk-row .pv-head { padding: 9px 6px 9px 10px; cursor: pointer; }
+.mk-row.is-active { border-color: var(--accent-line); background: var(--card-hover); }
+.mk-row.is-auth, .mk-row.is-key { border-color: var(--warn-line); }
+.mk-row.is-failed { border-color: var(--danger-line); }
+.mk-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mk-desc { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-desc code { font: 12px var(--font-mono); color: var(--text-2); }
+
+.mk-tile {
+  --brand: #64748b;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--brand) 82%, #fff) 0%, var(--brand) 55%, color-mix(in srgb, var(--brand) 80%, #000) 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 1px 2px rgba(0, 0, 0, 0.35);
+  color: #fff;
+  font: 700 15px var(--font-display);
+  letter-spacing: -0.02em;
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.25);
+}
+.mk-tile.is-two { font-size: 12px; }
+.mk-tile.is-sm { width: 22px; height: 22px; border-radius: 7px; font-size: 10px; }
+.mk-tile.is-on::after {
+  content: "";
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 2.5px var(--bg);
+}
+.mk-tile.is-plus {
+  background: var(--card-sunk);
+  box-shadow: inset 0 0 0 1px var(--line-2);
+  color: var(--text-2);
+  text-shadow: none;
+}
+.mk-tile.is-plus .ic { width: 16px; height: 16px; }
+:root[data-theme="light"] .mk-tile { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 1px 2px rgba(0, 0, 0, 0.12); }
+
+.mk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 7px 0 6px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--text-3);
+  font: 500 11px var(--font-ui);
+  white-space: nowrap;
+}
+.mk-badge .ic { width: 11px; height: 11px; }
+.mk-badge.is-accent { color: var(--text-2); }
+.mk-badge.is-ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 30%, transparent); }
+.mk-badge.is-warn { color: var(--warn); border-color: var(--warn-line); }
+.mk-badge.is-indigo { color: #a5b4fc; border-color: rgba(165, 180, 252, 0.3); }
+:root[data-theme="light"] .mk-badge.is-indigo { color: #4f46e5; border-color: rgba(79, 70, 229, 0.25); }
+
+.mk-row .pv-side { gap: 8px; }
+.mk-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ok); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mk-state .ex-dot { background: var(--ok); }
+.mk-busy { display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 6px; font-size: 12.5px; color: var(--text-2); }
+.mk-busy .spinner { width: 13px; height: 13px; }
+.mk-chev { display: grid; place-items: center; width: 30px; color: var(--text-3); }
+.mk-chev .ic { width: 16px; height: 16px; }
+.mk-custom-row .pv-title, .mk-src .pv-title { color: var(--text-2); }
+.mk-custom-row:hover .pv-title, .mk-src:hover .pv-title { color: var(--text); }
+.row-btn.is-warn { color: var(--warn); border-color: var(--warn-line); background: var(--warn-soft); }
+.mk-row .row-btn.is-go { color: var(--text); }
+.mk-row .row-btn.is-go .ic { color: var(--text-3); }
+.mk-row:hover .row-btn.is-go, .mk-row.is-active .row-btn.is-go { color: var(--accent); border-color: var(--accent-line); background: var(--accent-soft); }
+.mk-row:hover .row-btn.is-go .ic, .mk-row.is-active .row-btn.is-go .ic { color: var(--accent); }
+
+.mk-panel { gap: 12px; }
+/* Sub-views (setup, OAuth app): tile + name on top, then the form. */
+.mk-view { display: flex; flex-direction: column; gap: 14px; }
+.mk-vhead { display: flex; align-items: center; gap: 12px; min-width: 0; padding: 2px 2px 4px; }
+.mk-vhead .pv-text { gap: 1px; }
+.mk-view + .pv-foot, .mk-custom + .pv-foot { margin-top: 18px; }
+.mk-list + .pv-foot, .ex-list + .pv-foot { margin-top: 14px; }
+.mk-panel a.btn, .ex-panel a.mk-link { text-decoration: none; }
+.mk-setup { display: flex; flex-direction: column; gap: 12px; }
+.mk-why { display: flex; flex-direction: column; gap: 3px; margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-2); }
+.mk-why strong { font-size: 13.5px; font-weight: 600; color: var(--text); }
+.mk-steps { display: flex; flex-direction: column; gap: 9px; margin: 0; padding: 0; list-style: none; }
+.mk-steps li { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.5; color: var(--text); }
+.mk-steps .pv-n { margin-top: 0; }
+.mk-setup-links { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.mk-link { display: inline-flex; align-items: center; gap: 7px; text-decoration: none; }
+.mk-link .ic { width: 13px; height: 13px; opacity: 0.8; }
+.mk-redirect {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.mk-redirect code {
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card-sunk);
+  font: 12px var(--font-mono);
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+.mk-redirect em { font-style: normal; }
+.mk-redirect .ex-copy { margin-left: -4px; }
+.mk-fields { display: flex; flex-direction: column; gap: 6px; }
+.ex-lbl.is-friendly { font: 600 12.5px var(--font-ui); color: var(--text); }
+.ex-lbl.is-friendly em { font-size: 12px; }
+.mk-note { display: flex; align-items: flex-start; gap: 7px; margin: 0; }
+.mk-note .ic { width: 14px; height: 14px; margin-top: 2px; flex-shrink: 0; color: var(--text-3); }
+
+.mk-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 28px 16px 22px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+}
+.mk-empty .ic { width: 20px; height: 20px; margin-bottom: 6px; }
+.mk-empty strong { color: var(--text); font-weight: 600; }
+
+
+/* A failed card stays calm: one line, then what to do. */
+.ex-errline { display: flex; align-items: flex-start; gap: 8px; margin: 0; font-size: 13px; line-height: 1.5; color: var(--danger); overflow-wrap: anywhere; }
+.ex-errline .ic { width: 15px; height: 15px; margin-top: 2px; flex-shrink: 0; }
+
+@media (max-width: 560px) {
+  .mk-tab { height: 34px; font-size: 13px; }
+  .mk-badge span { display: none; }
+  .mk-badge { padding: 0 5px; }
+  .mk-row .pv-side .row-btn:not(.is-icon) { padding: 0 10px; }
+  .mk-row .mk-state { display: none; }
 }
 
 /* ─── Custom commands (commands.js) ────────────────────────────────────── */

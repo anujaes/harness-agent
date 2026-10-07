@@ -24,47 +24,8 @@ def _fmt_tokens(n: int) -> str:
     return str(n)
 
 
-_CTX_CACHE: dict[str, int | None] = {}
-
-
-def _catalog_context(model: str) -> int | None:
-    """Context window models.dev lists for ``model`` on the active provider."""
-    try:
-        from ..auth import models_dev
-
-        m = models_dev.find_model(model, state.provider or "")
-    except Exception:
-        return None
-    return (m.context or None) if m is not None else None
-
-
-def context_window(model: str) -> int | None:
-    """Best-known context window for ``model`` (None when unknown)."""
-    # The active provider's own listing wins (memoised in models_dev); the
-    # same id can carry a different window on another provider.
-    found = _catalog_context(model)
-    if found:
-        return found
-    if model in _CTX_CACHE:
-        return _CTX_CACHE[model]
-    ctx: int | None = None
-    low = (model or "").lower()
-    if low.startswith("claude"):
-        ctx = 200_000
-    else:
-        try:
-            from ..auth import catalog_cache
-            from ..auth.openrouter_catalog import CACHE_NAME
-
-            payload, _fresh = catalog_cache.read(CACHE_NAME)
-            for row in payload or []:
-                if isinstance(row, dict) and row.get("id") == model:
-                    ctx = int(row.get("context_length") or 0) or None
-                    break
-        except Exception:
-            ctx = None
-    _CTX_CACHE[model] = ctx
-    return ctx
+# One lookup for the sidebar, the footer and the request guard.
+from ..repl.context_budget import context_window  # noqa: E402,F401
 
 
 def meter(fraction: float, width: int = 16) -> Text:
@@ -179,6 +140,10 @@ class SidebarBody(Widget):
         if total and not window:
             line(f"↑ {_fmt_tokens(int(state.total_in or 0))}  ↓ {_fmt_tokens(int(state.total_out or 0))}",
                  ui.FG_DIM)
+        cached = int(getattr(state, "cache_read_tokens", 0) or 0)
+        prompt = int(state.total_in or 0)
+        if cached and prompt:
+            line(f"⚡ {min(100, cached * 100 // prompt)}% of prompt from cache", ui.FG_DIM)
         try:
             from ..constants import model_pricing
 
@@ -199,8 +164,15 @@ class SidebarBody(Widget):
             bits.append(provider_label(str(state.provider or "")))
         except Exception:
             pass
-        if state.think_mode:
-            bits.append(f"think {state.think_effort}")
+        try:
+            from ..repl.thinking import effective_now
+
+            _eff = effective_now()
+            if _eff.on:
+                bits.append(f"think {_eff.label}")
+        except Exception:
+            if state.think_mode:
+                bits.append(f"think {state.think_effort}")
         if bits:
             line(" · ".join(b for b in bits if b), ui.FG_DIM)
         rec = state.active_agent
@@ -237,6 +209,14 @@ class SidebarBody(Widget):
         except Exception:
             servers, source_of = {}, None
         section("MCP", "◈")
+        try:
+            from ..mcp.toggle import mcp_enabled
+
+            mcp_on = mcp_enabled()
+        except Exception:
+            mcp_on = True
+        if not mcp_on and servers:
+            out.append("  off", style=f"italic {ui.FG_DIM}")
         names = list(servers.items())
         for name, cfg in names[:8]:
             try:
@@ -250,6 +230,12 @@ class SidebarBody(Widget):
             }.get(status, ui.FG_DIM)
             out.append("\n")
             hit("mcp", name, status)
+            if status == "off":
+                out.append("○ ", style=ui.FG_DIM)
+                out.append(name, style=ui.FG_DIM)
+                if mcp_on:
+                    out.append("  off", style=ui.FG_DIM)
+                continue
             out.append("◐ " if status == "auth" else "● ", style=color)
             out.append(name, style=ui.FG_MUTE if status != "auth" else f"underline {ui.FG}")
             if status == "auth":

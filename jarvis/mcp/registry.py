@@ -28,6 +28,7 @@ from mcp.client.stdio import get_default_environment, stdio_client, StdioServerP
 from mcp.client.streamable_http import streamablehttp_client
 
 from . import secrets as mcp_secrets
+from . import toggle as mcp_toggle
 from ..utils.osinfo import package_manager_hint
 from .auth import AuthCancelled, AuthNeeded, FLOW_TTL, build_provider, coordinator as auth_coordinator, forget_login
 
@@ -101,7 +102,7 @@ class MCPHealthRecord:
     tool_calls_err: int = 0
 
 
-MCPHealthStatus = Literal["connecting", "live", "idle", "failed", "warn", "auth"]
+MCPHealthStatus = Literal["connecting", "live", "idle", "failed", "warn", "auth", "off"]
 
 
 def _preflight_hints(name: str, config: dict[str, Any]) -> list[str]:
@@ -334,9 +335,21 @@ def _describe_remote_error(leaves: list[BaseException], config: dict[str, Any]) 
             return "cancelled", str(e) or "Sign-in cancelled"
     for e in leaves:
         if isinstance(e, OAuthRegistrationError):
+            if isinstance(config.get("oauth"), dict):
+                return "error", f"Sign-in with {host} failed: the app's Client ID wasn't accepted. Check it in the MCP dialog."
+            from .catalog import by_alt_url
+
+            alt = by_alt_url(str(config.get("url") or ""))
+            if alt and alt.get("alt_note"):
+                return "error", alt["alt_note"]
+            if "403" in str(e) or "forbidden" in str(e).lower():
+                return "error", (
+                    f"{host} only lets apps it has approved sign in — it refused Jarvis. If the provider lets you "
+                    "create your own OAuth app, add its Client ID / Secret (OAuth app…); otherwise use an API token."
+                )
             return "error", (
-                f"{host} needs an API key or token — it doesn't offer browser sign-in. "
-                "Add one with mcp_add headers (Authorization: Bearer …) or in the MCP dialog."
+                f"{host} only lets registered apps sign in (no automatic sign-up). Create an OAuth app with "
+                f"its provider and add the Client ID / Secret (OAuth app…), or use an API token instead."
             )
         if isinstance(e, (OAuthFlowError, OAuthTokenError)):
             return "error", f"Sign-in with {host} failed: {e}"
@@ -352,9 +365,22 @@ def _describe_remote_error(leaves: list[BaseException], config: dict[str, Any]) 
             return "error", f"{host} answered HTTP {code}."
     for e in leaves:
         if isinstance(e, (httpx.ConnectError, httpx.ConnectTimeout)):
+            from .catalog import by_url
+
+            item = by_url(str(config.get("url") or ""))
+            if item and item.get("auth") == "desktop":
+                steps = (item.get("setup") or {}).get("steps") or []
+                alt = " No desktop app? Add “Figma (token)” from the marketplace instead." if item["id"] == "figma" else ""
+                return "error", (
+                    f"The {item['label']} desktop app's MCP server isn't running. "
+                    + " ".join(steps[:3]) + alt
+                ).strip()
             return "error", f"Couldn't reach {host}. Check the address and your connection."
         if isinstance(e, (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout, TimeoutError, asyncio.TimeoutError)):
             return "error", f"{host} took too long to answer."
+    for e in leaves:
+        if isinstance(e, RuntimeError) and "sign-in callback" in str(e):
+            return "error", f"Couldn't start the sign-in: {e}. Close whatever uses that port and try again."
     first = leaves[0] if leaves else Exception("unknown error")
     text = str(first).strip() or type(first).__name__
     return "error", f"{type(first).__name__}: {text}"
@@ -418,6 +444,11 @@ class MCPRegistry:
                 fn(event, server_name)
             except Exception:
                 logger.debug("mcp listener failed", exc_info=True)
+
+    def notify(self, event: str, server_name: str) -> None:
+        """Tell the listeners about a change made outside a connect — a server
+        switched on / off (``toggled``; ``*`` = MCP as a whole)."""
+        self._emit(event, server_name)
 
     def _on_auth_event(self, kind: str, data: dict[str, Any]) -> None:
         name = str(data.get("name") or "")
@@ -529,12 +560,16 @@ class MCPRegistry:
             )
             needs_auth_flag = server_name in self._needs_auth
 
+        enabled = mcp_toggle.server_enabled(server_name)
+        mcp_on = mcp_toggle.mcp_enabled()
         hints = _preflight_hints(server_name, config) if config else []
         auth_req = None if connected else auth_coordinator.get(server_name)
         signing_in = auth_req is not None and auth_req.status in ("pending", "working")
 
-        if signing_in or (needs_auth_flag and not connected):
-            status: MCPHealthStatus = "auth"
+        if not connected and not (enabled and mcp_on):
+            status: MCPHealthStatus = "off"
+        elif signing_in or (needs_auth_flag and not connected):
+            status = "auth"
         elif connecting:
             status = "connecting"
         elif connected:
@@ -552,14 +587,19 @@ class MCPRegistry:
             status = "idle"
 
         detail_parts: list[str] = []
-        if status == "auth":
+        if status == "off":
+            detail_parts.append(
+                "MCP is turned off — no server connects" if not mcp_on
+                else "Turned off — Jarvis won't connect it or use its tools"
+            )
+        elif status == "auth":
             detail_parts.append(
                 (auth_req.message if signing_in and auth_req.message else "")
                 or "Sign in to finish connecting"
             )
         elif last_connect_error:
             detail_parts.append(f"connect failed: {last_connect_error}")
-        if last_disconnect and not connected:
+        if last_disconnect and not connected and status != "off":
             detail_parts.append(f"disconnected: {last_disconnect}")
         if last_tool_error:
             detail_parts.append(f"last tool error: {last_tool_error}")
@@ -577,6 +617,7 @@ class MCPRegistry:
             "failed": "connect failed",
             "warn": "needs attention",
             "auth": "sign-in needed",
+            "off": "turned off" if mcp_on else "MCP off",
         }[status]
 
         return {
@@ -585,6 +626,7 @@ class MCPRegistry:
             "detail": " · ".join(detail_parts) if detail_parts else "",
             "hints": hints,
             "connected": connected,
+            "enabled": enabled,
             "tool_count": tool_count,
             "last_connect_error": last_connect_error,
             "auth": auth_req.public() if signing_in else None,
@@ -600,7 +642,7 @@ class MCPRegistry:
     ) -> dict[str, int]:
         """Aggregate health states for a list of configured server names."""
         connecting = connecting or set()
-        counts = {"live": 0, "idle": 0, "failed": 0, "warn": 0, "connecting": 0, "auth": 0}
+        counts = {"live": 0, "idle": 0, "failed": 0, "warn": 0, "connecting": 0, "auth": 0, "off": 0}
         config = None
         try:
             from .config import get_config
@@ -695,8 +737,20 @@ class MCPRegistry:
         ``interactive=None`` starts a sign-in unless this thread is inside
         ``startup_connect()``.
         """
+        off = mcp_toggle.off_reason(server_name)
+        if off:
+            # Switched off by the user: never connects, whoever asks (a tool call,
+            # auto-connect, a scope change) — only the switch turns it back on.
+            return off
         if interactive is None:
             interactive = not getattr(self._tls, "quiet", False)
+        oauth_missing = mcp_secrets.missing(config.get("oauth")) if isinstance(config.get("oauth"), dict) else []
+        if oauth_missing:
+            # A pre-registered app without its ID / secret would fall back to
+            # self sign-up, which these hosts refuse — say what's missing instead.
+            msg = "needs " + ", ".join(oauth_missing) + " — add it in the MCP dialog"
+            self._record_connect_error(server_name, msg)
+            return msg
         config = mcp_secrets.expand(config)
         transport_type = config.get("type", "stdio")
         # A sign-in that just expired / was cancelled is still winding down for a
@@ -862,7 +916,10 @@ class MCPRegistry:
         headers = dict(config.get("headers") or {}) or None
         auth = None
         if _wants_oauth(config):
-            auth, _storage = build_provider(server_name, url, interactive=mode)
+            oauth = config.get("oauth")
+            auth, _storage = build_provider(
+                server_name, url, interactive=mode, client=oauth if isinstance(oauth, dict) else None,
+            )
         if transport == "sse":
             cm = sse_client(url, headers=headers, auth=auth)
         else:
@@ -1304,6 +1361,15 @@ def as_prompt_block() -> str:
     config = get_config()
     servers = config.list_servers()
 
+    if not mcp_toggle.mcp_enabled():
+        if not servers:
+            return ""
+        return (
+            "MCP: turned OFF by the user — no MCP server is connected and there are no MCP tools. "
+            "Don't connect servers or read MCP config files to get around it; if a task needs one, "
+            "tell the user they can turn MCP back on in /mcp (or /mcp on)."
+        )
+
     lines: list[str] = []
     if not jarvis_state.global_mcp:
         lines.append(
@@ -1329,6 +1395,8 @@ def as_prompt_block() -> str:
     def _label(name: str) -> str:
         if name in live_names:
             return name
+        if not mcp_toggle.server_enabled(name):
+            return f"{name} (turned off by the user — don't connect it; they can turn it on in /mcp)"
         try:
             status = mcp_registry.get_server_health(name, servers.get(name)).get("status")
         except Exception:
@@ -1364,12 +1432,17 @@ def auto_connect_servers(
     from .config import get_config
 
     config = get_config()
-    queued = [n for n in config.get_auto_connect() if config.get_server(n) is not None]
+    if not mcp_toggle.mcp_enabled():
+        return
+    queued = [n for n in config.get_auto_connect()
+              if config.get_server(n) is not None and mcp_toggle.server_enabled(n)]
     mcp_registry.set_connecting(queued, True)
     if on_change:
         on_change()
     try:
         for name in config.get_auto_connect():
+            if not mcp_toggle.server_enabled(name):
+                continue  # switched off by the user
             server_cfg = config.get_server(name)
             if server_cfg is None:
                 if console_print:

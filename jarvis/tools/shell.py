@@ -320,7 +320,14 @@ def ask_approval(cmd: str, *, allow_readonly_shortcut: bool = True) -> str | Non
         return None
     # The command is model-written text: a `[x for x in y]` in it must print as
     # text, not be read as a Rich style tag (the TUI crashes on an unknown one).
-    console.print(f"[yellow]→ run:[/] [cyan]{escape(cmd)}[/]")
+    from ..subagents.context import current as _subagent
+
+    sub = _subagent()
+    who = ""
+    if sub is not None:
+        who = f"[bold]{escape(sub[1].name)}[/] (agent) "
+        sub[0].set_activity(sub[1], "Waiting for your approval")
+    console.print(f"[yellow]→ {who}run:[/] [cyan]{escape(cmd)}[/]")
     try:
         approve = getattr(console, "prompt_shell_approval", None)
         if approve is not None:
@@ -338,6 +345,29 @@ def ask_approval(cmd: str, *, allow_readonly_shortcut: bool = True) -> str | Non
     if state.turn_cancelled():
         raise KeyboardInterrupt()
     return None
+
+
+_CMD_ECHO_MAX = 1500
+
+
+def _format_result(cmd: str, code: int, out: str) -> str:
+    """``$ cmd`` / ``exit=N`` / output, kept within MAX_TOOL_OUTPUT. Long output
+    keeps its start and its end (first errors *and* the final summary) with a
+    note in between, instead of silently keeping only the tail."""
+    if len(cmd) > _CMD_ECHO_MAX:
+        cmd = cmd[:1000] + f" … [command truncated, {len(cmd):,} chars]"
+    header = f"$ {cmd}\nexit={code}\n"
+    budget = max(2000, MAX_TOOL_OUTPUT - len(header))
+    if len(out) > budget:
+        note_room = 120
+        head_n = (budget - note_room) // 3
+        tail_n = budget - note_room - head_n
+        omitted = len(out) - head_n - tail_n
+        out = (
+            f"{out[:head_n]}\n… [{omitted:,} chars of output omitted — rerun "
+            f"piped through grep / head / tail to see them] …\n{out[-tail_n:]}"
+        )
+    return header + out
 
 
 # ── process trees ──────────────────────────────────────────────────────────
@@ -622,7 +652,7 @@ def which_exe(name: str) -> str | None:
 
 def _format(display: str, r: Result) -> str:
     out = (r.stdout or "") + (f"\n[stderr]\n{r.stderr}" if r.stderr else "")
-    return f"$ {display}\nexit={r.returncode}\n{out[-MAX_TOOL_OUTPUT:]}"
+    return _format_result(display, r.returncode, out)
 
 
 def run_argv(argv: list[str], timeout: int = DEFAULT_BASH_TIMEOUT) -> str:

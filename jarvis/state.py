@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 from .constants import (
     VERSION, PIN_FILE, ALIAS_FILE, MODEL as _INITIAL_MODEL,
     PROVIDER_ANTHROPIC, PROVIDER_OPENCODE_ZEN, AUTH_API_KEY,
-    HARNESS_AGENT_DEFAULT_MODEL,
+    HARNESS_AGENT_FALLBACK_MODEL,
     THINK_EFFORTS, DEFAULT_THINK_EFFORT,
     TOOL_UI_HISTORY_SIZE,
 )
@@ -24,7 +24,8 @@ anthropic_model_ids: list[str] | None = None  # live ids after OAuth/API validat
 
 
 def _compute_initial_model() -> str:
-    """Env `CLAUDE_MODEL` wins; else global settings model; else Harness Agent default."""
+    """Env `CLAUDE_MODEL` wins; else global settings model; else the free tier's
+    fallback (import time: the live list needs jarvis.auth, which imports state)."""
     if os.environ.get("CLAUDE_MODEL"):
         return _INITIAL_MODEL
     try:
@@ -34,7 +35,7 @@ def _compute_initial_model() -> str:
             return m
     except Exception:
         pass
-    return HARNESS_AGENT_DEFAULT_MODEL
+    return HARNESS_AGENT_FALLBACK_MODEL
 
 
 # model
@@ -49,6 +50,9 @@ show_internal: bool = True
 total_in: int = 0
 total_out: int = 0
 total_tokens: int = 0
+# Prompt-cache tokens of the latest request (Anthropic): read from / written to cache.
+cache_read_tokens: int = 0
+cache_write_tokens: int = 0
 
 # Cancel processing flag — set when user presses Escape, checked at every
 # checkpoint (stream start, tool execution, between turn iterations).
@@ -75,11 +79,38 @@ def release_thread(ident: int | None) -> None:
             _cancelled_threads.discard(ident)
 
 
+# Helper threads working for a turn (parallel subagents): child → the thread
+# whose cancellation stops it too. Esc cancels the turn's worker; every
+# subagent it started must stop with it.
+_thread_parents: dict[int, int] = {}
+
+
+def link_thread(child: int | None, parent: int | None) -> None:
+    if child and parent and child != parent:
+        with _cancelled_lock:
+            _thread_parents[child] = parent
+
+
+def unlink_thread(child: int | None) -> None:
+    if child:
+        with _cancelled_lock:
+            _thread_parents.pop(child, None)
+
+
 def turn_cancelled() -> bool:
-    """True when the current turn (global flag) or this worker was cancelled."""
+    """True when the current turn (global flag) or this worker was cancelled
+    — or the worker it's helping (see ``link_thread``)."""
     if cancel_requested.is_set():
         return True
-    return threading.get_ident() in _cancelled_threads
+    ident = threading.get_ident()
+    with _cancelled_lock:
+        seen = set()
+        while ident and ident not in seen:
+            if ident in _cancelled_threads:
+                return True
+            seen.add(ident)
+            ident = _thread_parents.get(ident, 0)
+    return False
 
 # prompt stash (FIFO) — prompts received while busy; released one-by-one when each turn finishes
 # Each entry is ``str`` or ``(text, attachment_snapshot)`` for dropped-file chips.
@@ -88,6 +119,7 @@ startup_prompt: str = ""  # one-shot prompt from `jarvis "..."` CLI args
 web_enabled: bool = False
 web_port: int = 8765
 web_tunnel: bool = False  # --tunnel: also open a public "Anywhere" link at startup
+headless: bool = False  # --headless: no terminal UI — a project opened from the web remote (web/launcher.py)
 auto_approve: bool = False
 # Plan mode — session-scoped (never persisted). While True the tool router
 # exposes only read-only tools + exit_plan_mode; flipped off when the user

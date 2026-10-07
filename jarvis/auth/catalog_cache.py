@@ -59,8 +59,15 @@ def read(name: str) -> tuple[Any | None, bool]:
     return raw["payload"], age < _ttl()
 
 
+generation = 0  # bumped on every write/clear by this process
+
+
 def write(name: str, payload: Any) -> None:
     """Persist ``payload`` under ``name``. Failures are silent (cache is advisory)."""
+    global generation
+    # Readers that memoise on (mtime, size) also check this: on Windows file
+    # times move in ~15 ms ticks, so two same-size writes in one tick look alike.
+    generation += 1
     try:
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         tmp = _path(name).with_suffix(".tmp")
@@ -71,6 +78,8 @@ def write(name: str, payload: Any) -> None:
 
 
 def clear(name: str) -> None:
+    global generation
+    generation += 1  # see write()
     try:
         _path(name).unlink()
     except OSError:

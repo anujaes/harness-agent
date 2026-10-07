@@ -3,8 +3,9 @@
 Strategy:
   - Keep the last KEEP_TURNS full user+assistant pairs always intact.
   - For older tool-result messages, replace the content with a short stub.
-  - NEVER stub Connected Context Pack results (they contain ALL the file
-    content the model needs to work with — stubbing breaks the workflow).
+  - Never stub Connected Context Pack results here — repl/context_budget.py
+    owns them (older packs collapse to a file list per turn; everything is
+    fitted to the model's window before sending).
   - Never drop user or assistant text messages — only collapses old tool outputs.
 
 This is a lossy compression: old tool outputs are replaced with a stub.
@@ -20,6 +21,12 @@ import copy
 
 # Number of recent user/assistant exchanges to preserve in full.
 KEEP_TURNS = 10
+# The trim point moves in steps of this many user messages rather than one
+# per request: each move rewrites history (old tool output → stub), which
+# costs a prompt-cache miss from that point on (and, on Claude 5 models,
+# the thinking blocks after it). Between moves the request prefix is stable.
+# Never keeps fewer than KEEP_TURNS — only up to TRIM_STEP - 1 more.
+TRIM_STEP = 8
 
 # Approximate token budget at which we start trimming.
 # A rough heuristic: each character ≈ 0.25 tokens.
@@ -114,6 +121,28 @@ def estimate_session_tokens(messages: List[Dict]) -> tuple[int, int, int]:
     return total_in, total_out, total_tokens
 
 
+def count_tool_calls(messages: List[Dict]) -> int:
+    """How many tools the assistant called in ``messages`` — ``/stats`` and the
+    sidebars after resuming a session.
+
+    The live counter (``render.py``) goes up once per ``tool_use`` block the
+    model sends; this counts the same blocks in saved history (dicts from
+    sessions.db / ``/load``, or SDK objects still in memory).
+    """
+    n = 0
+    for msg in messages or []:
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for b in content:
+            kind = b.get("type") if isinstance(b, dict) else getattr(b, "type", None)
+            if kind == "tool_use":
+                n += 1
+    return n
+
+
 def _stub_tool_results(msg: Dict) -> Dict:
     """Return a copy of a user message with tool_result blocks collapsed.
 
@@ -158,7 +187,11 @@ def trim_messages(messages: List[Dict]) -> List[Dict]:
     if len(user_indices) <= KEEP_TURNS:
         return messages  # not enough history to trim anything
 
-    cutoff_idx = user_indices[-KEEP_TURNS]  # first index of the "keep" window
+    # First index of the "keep" window, snapped back to a TRIM_STEP boundary.
+    pos = len(user_indices) - KEEP_TURNS
+    cutoff_idx = user_indices[(pos // TRIM_STEP) * TRIM_STEP]
+    if cutoff_idx <= user_indices[0]:
+        return messages
 
     trimmed = []
     for i, msg in enumerate(messages):

@@ -355,7 +355,7 @@ def _snippet(path: pathlib.Path, terms: list[str], max_chars: int) -> str:
     if path.suffix.lower() not in TEXT_EXTS and path.name not in {".env", "Dockerfile"}:
         return ""
     try:
-        text = path.read_text(errors="ignore")[:12000]
+        text = path.read_text(encoding="utf-8", errors="ignore")[:12000]
     except Exception:
         return ""
     lower = text.lower()

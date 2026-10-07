@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import contextlib
 import json
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Generator, Optional
 
-from openai import OpenAI
+from openai import BadRequestError, OpenAI
 
-from ..constants.providers import CODEX_BASE_URL
+from ..constants.providers import CODEX_BASE_URL, PROVIDER_OPENAI_CODEX
+from .thinking_caps import looks_like_thinking_refusal, mark_refused
 from ..utils.json_repair import repair_json_arguments
 from .http_timeout import harness_http_timeout
 from ..utils.tool_images import data_url, split_tool_result
@@ -112,6 +114,9 @@ def _anthropic_messages_to_responses_input(messages: list[dict]) -> list[dict]:
 class _Usage:
     input_tokens: int = 0
     output_tokens: int = 0
+    # Part of input_tokens served from OpenAI's prompt cache (already counted
+    # in input_tokens — informational only).
+    cached_input_tokens: int = 0
 
     @property
     def total_tokens(self) -> int:
@@ -153,9 +158,31 @@ class _FakeMessage:
     usage: _Usage = field(default_factory=_Usage)
 
 
+class CodexResponseError(Exception):
+    """The Codex backend ended a streamed response with an error event
+    (``response.failed`` / ``error``) — e.g. ``context_length_exceeded``."""
+
+    def __init__(self, message: str, code: str = ""):
+        super().__init__(f"{code}: {message}" if code else message)
+        self.code = code
+
+
+def _event_error(event: Any) -> tuple[str, str]:
+    """(code, message) from a ``response.failed`` or ``error`` event."""
+    err = getattr(event, "error", None)
+    if err is None:
+        resp = getattr(event, "response", None)
+        err = getattr(resp, "error", None) if resp is not None else None
+    src = err if err is not None else event
+    code = str(getattr(src, "code", "") or "")
+    message = str(getattr(src, "message", "") or "") or "the response failed"
+    return code, message
+
+
 class _CodexStream:
     def __init__(self, response_iter, model: str):
         self._iter = response_iter
+        self._drained = False
         self._model = model
         self._text_parts: list[str] = []
         self._tool_calls: dict[str, dict] = {}
@@ -165,13 +192,24 @@ class _CodexStream:
 
     @property
     def text_stream(self) -> Generator[str, None, None]:
+        for kind, chunk in self.delta_stream:
+            if kind == "text":
+                yield chunk
+
+    @property
+    def delta_stream(self) -> Generator[tuple[str, Any], None, None]:
+        """``("text", chunk)`` and ``("tool_input", (id, name, args delta))`` —
+        the latter so a long write_file shows progress instead of silence."""
         for event in self._iter:
             etype = getattr(event, "type", "")
+            if etype in ("response.failed", "error"):
+                code, message = _event_error(event)
+                raise CodexResponseError(message, code)
             if etype == "response.output_text.delta":
                 delta = getattr(event, "delta", "") or ""
                 if delta:
                     self._text_parts.append(delta)
-                    yield delta
+                    yield "text", delta
             elif etype == "response.function_call_arguments.delta":
                 item_id = getattr(event, "item_id", "") or ""
                 delta = getattr(event, "delta", "") or ""
@@ -180,6 +218,17 @@ class _CodexStream:
                     {"id": item_id, "name": "", "arguments": ""},
                 )
                 slot["arguments"] += delta
+                if delta:
+                    yield "tool_input", (item_id, slot.get("name", ""), delta)
+            elif etype == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if item is not None and getattr(item, "type", "") == "function_call":
+                    item_id = getattr(item, "id", "") or getattr(item, "call_id", "")
+                    slot = self._tool_calls.setdefault(
+                        item_id, {"id": item_id, "name": "", "arguments": ""}
+                    )
+                    slot["name"] = getattr(item, "name", "") or slot["name"]
+                    yield "tool_input", (item_id, slot["name"], "")
             elif etype == "response.output_item.done":
                 item = getattr(event, "item", None)
                 if item is not None:
@@ -197,10 +246,18 @@ class _CodexStream:
                 if usage is not None:
                     self._usage.input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
                     self._usage.output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+                    details = getattr(usage, "input_tokens_details", None)
+                    self._usage.cached_input_tokens = int(getattr(details, "cached_tokens", 0) or 0)
+        self._drained = True
 
     def get_final_message(self) -> _FakeMessage:
         if self._final is not None:
             return self._final
+        if not self._drained:
+            # Nobody consumed the stream (live reply streaming off): read the
+            # events now — the reply used to come back empty.
+            for _ in self.delta_stream:
+                pass
         blocks: list[_ContentBlock] = []
         text = "".join(self._text_parts).strip()
         if text:
@@ -258,6 +315,22 @@ class _CodexStream:
         self.close()
 
 
+# One id per process; with the session id it names a conversation for the
+# backend's prompt cache (requests with the same key are routed to the same
+# cache, as the official Codex CLI does with its conversation id).
+_PROCESS_TAG = uuid.uuid4().hex[:12]
+_cache_key_refused = False
+
+
+def _prompt_cache_key() -> str | None:
+    if _cache_key_refused:
+        return None
+    from .. import state
+
+    sid = getattr(state, "current_session_id", None)
+    return f"jarvis-{_PROCESS_TAG}-{sid if sid is not None else 0}"
+
+
 class _CodexMessages:
     def __init__(self, client: OpenAI):
         self._client = client
@@ -291,7 +364,26 @@ class _CodexMessages:
             effort = str(thinking.get("effort") or "high")
             payload["reasoning"] = {"effort": effort}
 
-        response = self._client.responses.create(**payload)
+        cache_key = _prompt_cache_key()
+        if cache_key:
+            payload["prompt_cache_key"] = cache_key
+        try:
+            response = self._client.responses.create(**payload)
+        except BadRequestError as e:
+            if "reasoning" in payload and looks_like_thinking_refusal(e):
+                # This model doesn't take that reasoning level. Remember it (so
+                # the picker stops offering it) and ask again without — the
+                # backend then uses the model's own default.
+                mark_refused(PROVIDER_OPENAI_CODEX, model, str(payload["reasoning"].get("effort") or "*"))
+                payload.pop("reasoning", None)
+                response = self._client.responses.create(**payload)
+            elif "prompt_cache_key" not in payload or "prompt_cache_key" not in str(e):
+                raise
+            else:
+                global _cache_key_refused
+                _cache_key_refused = True
+                payload.pop("prompt_cache_key", None)
+                response = self._client.responses.create(**payload)
         stream = _CodexStream(response, model)
         try:
             yield stream

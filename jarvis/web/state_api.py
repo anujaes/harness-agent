@@ -120,6 +120,16 @@ def _tool_entry(block: dict, results: dict[str, tuple[str, bool]],
         entry["full_chars"] = int(fields.get("output_chars") or 0)
     # Screenshots: the transcript's tool_result holds base64 only; the raw
     # output (with the image's path) is still in this run's tool history.
+    if name == "spawn_agents":
+        # The parallel-agents card: live board, or rebuilt from the result.
+        try:
+            from ..subagents import board_for
+
+            board = board_for(tid, block.get("input"), output if done else None)
+        except Exception:
+            board = None
+        if board:
+            entry["agents"] = board
     raw = (raw_outputs or {}).get(tid)
     if raw:
         from ..media import images_in_output
@@ -128,6 +138,26 @@ def _tool_entry(block: dict, results: dict[str, tuple[str, bool]],
         if images:
             entry["images"] = images
     return entry
+
+
+def subagents_board(tool_id: str) -> dict[str, Any] | None:
+    """Full board (reports included) for one spawn_agents call, or None."""
+    from .. import state
+    from ..subagents import board_for
+
+    tool_id = str(tool_id or "")
+    if not tool_id:
+        return None
+    for m in reversed(state.messages):
+        if m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+            continue
+        for b in m["content"]:
+            d = _block_dict(b)
+            if d.get("type") == "tool_use" and str(d.get("id")) == tool_id:
+                results = _tool_results(state.messages)
+                out = results.get(tool_id)
+                return board_for(tool_id, d.get("input"), out[0] if out else None)
+    return board_for(tool_id)
 
 
 def _raw_image_outputs() -> dict[str, str]:
@@ -225,6 +255,7 @@ def snapshot_messages() -> list[dict[str, Any]]:
     """
     from .. import state
     from ..media import attachments_in
+    from ..prompt_queue import strip_steer
 
     out: list[dict[str, Any]] = []
     trace = bool(state.show_internal)
@@ -238,11 +269,18 @@ def snapshot_messages() -> list[dict[str, Any]]:
         if role == "user":
             shown, files = attachments_in(content)
             if files:
-                out.append({"role": "you", "text": shown, "title": "You", "attachments": files})
+                shown, steered = strip_steer(shown)
+                entry = {"role": "you", "text": shown, "title": "You", "attachments": files}
+                if steered:
+                    entry["steered"] = True
+                out.append(entry)
                 continue
-            text = _content_text(content)
+            text, steered = strip_steer(_content_text(content))
             if text:
-                out.append({"role": "you", "text": text, "title": "You"})
+                entry = {"role": "you", "text": text, "title": "You"}
+                if steered:
+                    entry["steered"] = True  # "send now": joined the turn mid-way
+                out.append(entry)
             continue
 
         if role == "assistant":
@@ -289,6 +327,18 @@ def _session_title(session_id: Any) -> str:
         return str((row[0] if row else "") or "").strip()
     except Exception:
         return ""
+
+
+def _cwd_fields() -> dict[str, Any]:
+    """The folder this Jarvis works in (the page's folder chip) and whether it has a terminal."""
+    from .. import state
+    from .fs_api import display
+
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        cwd = ""
+    return {"cwd": cwd, "cwd_display": display(cwd) if cwd else "", "headless": bool(state.headless)}
 
 
 def _project_name() -> str:
@@ -340,10 +390,11 @@ def state_fields(*, busy: bool = False, session_title: str | None = None) -> dic
     Cheap enough to poll every second (``StateWatcher``); pass
     ``session_title`` to skip the database read when it is already known.
     """
-    from .. import state
-    from ..media import queue_label
+    from .. import state, prompt_queue
+    from ..storage import pin as pin_store
 
-    queue_items = [queue_label(item) for item in list(state.prompt_queue)]
+    _, pin_chars = pin_store.pin_stats()
+    pin_lines = len(pin_store.pin_items())  # rules, not blank lines
 
     return {
         "message_count": len(state.messages),
@@ -351,11 +402,14 @@ def state_fields(*, busy: bool = False, session_title: str | None = None) -> dic
             _session_title(state.current_session_id) if session_title is None else session_title
         ),
         "project": _project_name(),
+        **_cwd_fields(),
         "global_agents": bool(getattr(state, "global_agents", False)),
         "global_skills": bool(getattr(state, "global_skills", False)),
         "global_mcp": bool(getattr(state, "global_mcp", False)),
         "busy": busy,
-        "queue": [q for q in queue_items if q],
+        "queue": prompt_queue.labels(),
+        "queue_items": prompt_queue.public(),
+        "pin": {"lines": pin_lines, "enabled": pin_store.is_enabled(), "chars": pin_chars},
         "model": state.MODEL,
         "vision": _model_sees_images(),
         "session_id": state.current_session_id,
@@ -363,14 +417,27 @@ def state_fields(*, busy: bool = False, session_title: str | None = None) -> dic
         "provider": state.provider,
         "think_mode": state.think_mode,
         "think_effort": state.think_effort,
+        "think": _think_fields(),
         "show_internal": state.show_internal,
         "auto_approve": state.auto_approve,
         "tokens_in": state.total_in,
         "tokens_out": state.total_out,
         "tokens_total": state.total_tokens,
+        "tokens_cache_read": state.cache_read_tokens,
         "tool_calls": state.tool_calls_count,
         "jobs": jobs_fields(),
     }
+
+
+def _think_fields() -> dict[str, Any]:
+    """What the current model takes for thinking (levels, on/off only, always on,
+    none) and what is really sent — the picker's rows ride along."""
+    try:
+        from ..repl import thinking
+
+        return thinking.public()
+    except Exception:
+        return {"known": False, "mode": "unknown", "levels": [], "choices": []}
 
 
 def snapshot_from_state(*, busy: bool = False) -> dict[str, Any]:
@@ -389,22 +456,23 @@ def apply_settings(data: dict[str, Any]) -> dict[str, Any]:
 
     result: dict[str, Any] = {}
 
-    if "think_mode" in data:
-        state.think_mode = bool(data["think_mode"])
-        if state.think_mode and state.think_effort == "none":
-            state.think_effort = DEFAULT_THINK_EFFORT
-        state.save_think_config()
+    if "think_mode" in data or "think_effort" in data:
+        from ..repl import thinking
+
+        # A choice the current model can't take is refused with the reason (the
+        # page shows it), not silently turned into another one.
+        if "think_mode" in data:
+            reason = thinking.set_preference("on" if data["think_mode"] else "off")
+            if reason:
+                result["error"] = reason
+        if "think_effort" in data and "error" not in result:
+            effort = str(data["think_effort"]).strip().lower()
+            if effort in THINK_EFFORTS:
+                reason = thinking.set_preference(effort)
+                if reason:
+                    result["error"] = reason
         result["think_mode"] = state.think_mode
         result["think_effort"] = state.think_effort
-
-    if "think_effort" in data:
-        effort = str(data["think_effort"]).strip().lower()
-        if effort in THINK_EFFORTS:
-            state.think_effort = effort
-            state.think_mode = effort != "none"
-            state.save_think_config()
-            result["think_mode"] = state.think_mode
-            result["think_effort"] = state.think_effort
 
     if "show_internal" in data:
         state.show_internal = bool(data["show_internal"])

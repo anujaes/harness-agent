@@ -3,6 +3,7 @@ import { loadSnapshot, store } from './store.js';
 import {
   appendMessage,
   appendDiff,
+  appendStats,
   renderSnapshot,
   streamDelta,
   streamEnd,
@@ -10,6 +11,7 @@ import {
   syncThoughtsVisibility,
   toolDone,
   toolStart,
+  updateAgents,
   invalidateSnapshot,
 } from './chat.js';
 import { setBusy, setQueue, setStatusLabel } from './status.js';
@@ -20,8 +22,10 @@ import { refreshProviders } from './providers.js';
 import { handleMcpEvent } from './mcp.js';
 import { handleSkillsEvent } from './skills.js';
 import { handleCommandsEvent } from './commands.js';
+import { handlePinEvent } from './pin.js';
 import { loadChanges, applyChange } from './changes.js';
 import { loadActivity, setJobs, noteToolStart, noteToolDone } from './activity.js';
+import { handleProjectsEvent } from './projects.js';
 
 let runningTools = 0;
 
@@ -40,7 +44,7 @@ export function handleEvent(evt) {
       loadSnapshot(data);
       renderSnapshot(data);
       setBusy(!!data.busy);
-      setQueue(data.queue || []);
+      setQueue(data.queue || [], data.queue_items);
       loadChanges(data.changes, data.session_id);
       loadActivity(data.messages);
       setJobs(data.jobs);
@@ -54,7 +58,7 @@ export function handleEvent(evt) {
       // Changed elsewhere (terminal, another tab) — see jarvis/web/sync.py.
       loadSnapshot(data);
       setBusy(!!data.busy);
-      setQueue(data.queue || []);
+      setQueue(data.queue || [], data.queue_items);
       if ('jobs' in data) setJobs(data.jobs);
       syncThoughtsVisibility();
       break;
@@ -76,7 +80,7 @@ export function handleEvent(evt) {
       break;
 
     case 'message':
-      appendMessage(data.role || 'assistant', data.text, data.title, data.attachments);
+      appendMessage(data.role || 'assistant', data.text, data.title, data.attachments, { steered: !!data.steered });
       break;
 
     case 'log':
@@ -85,6 +89,11 @@ export function handleEvent(evt) {
 
     case 'diff':
       appendDiff(data);
+      break;
+
+    case 'stats':
+      // /stats: numbers as data, drawn as a card (chat.js).
+      appendStats(data);
       break;
 
     case 'status':
@@ -99,7 +108,12 @@ export function handleEvent(evt) {
       break;
 
     case 'queue':
-      setQueue(data.items || []);
+      setQueue(data.items || [], data.entries);
+      break;
+
+    case 'pin':
+      // Pinned context changed (this tab, another one): the dialog + sidebar chip.
+      handlePinEvent(data);
       break;
 
     case 'stream_start':
@@ -130,6 +144,10 @@ export function handleEvent(evt) {
       else setStatusLabel('Thinking');
       break;
 
+    case 'agents':
+      updateAgents(data);
+      break;
+
     case 'shell_approval':
       renderShellApproval(data);
       break;
@@ -157,6 +175,11 @@ export function handleEvent(evt) {
     case 'skills':
       handleSkillsEvent();
       break;
+    case 'projects':
+      // Another Jarvis opened or closed, got busy, finished or asks for approval.
+      handleProjectsEvent(data);
+      break;
+
     case 'commands':
       // A command was made, edited or removed (this tab or another): reload the slash menu.
       handleCommandsEvent();

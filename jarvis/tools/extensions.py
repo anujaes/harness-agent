@@ -171,6 +171,8 @@ def mcp_list() -> str:
         return (f"No MCP servers in scope ({where}). Add one with mcp_add — a hosted URL, an npx/uvx command, "
                 "a `claude mcp add …` line, JSON, a GitHub link, or a name like linear/notion/sentry.")
     lines = [f"MCP servers ({'project + global' if data['global_mcp'] else 'project only'}):"]
+    if not data.get("mcp_enabled", True):
+        lines[0] = "MCP is TURNED OFF by the user — nothing connects; they can turn it on in /mcp (or /mcp on). " + lines[0]
     for s in servers:
         h = s["health"]
         st = h.get("status")
@@ -181,6 +183,7 @@ def mcp_list() -> str:
             "warn": "needs attention: " + (h.get("detail") or ""),
             "connecting": "connecting…",
             "idle": "not connected",
+            "off": "TURNED OFF by the user (don't connect it — they turn it on in /mcp)",
         }.get(st, st)
         lines.append(f"  • {s['name']} [{s['scope']}, {s['transport']}] {word}")
         if s["needs_credentials"]:
@@ -286,8 +289,9 @@ EXTENSION_TOOLS = [
             "Add an MCP server for the user and connect it. `source` can be a hosted address "
             "(https://mcp.linear.app/mcp), an install command (npx -y @scope/server, uvx mcp-server-x), a "
             "`claude mcp add …` line from a README, a JSON config snippet, a GitHub repo link (its README is read), "
-            "or a well-known name (linear, notion, sentry, github, atlassian, asana, figma, stripe, vercel, "
-            "supabase, context7, playwright, fetch, memory, filesystem). Or pass `url` / `command`+`args` directly. "
+            "or a marketplace name — 60+ are known: slack, notion, linear, github, atlassian (jira/confluence), "
+            "clickup, asana, monday, figma, canva, sentry, supabase, stripe, vercel, zapier, playwright, … "
+            "(the /mcp dialog lists them all). Or pass `url` / `command`+`args` directly. "
             "Use this instead of editing .mcp.json or running npx yourself. "
             "Results: connected (tools are usable next step) · auth_required (a hosted server needs the user to "
             "click the Authenticate button — tell them, then stop) · needs_credentials (a hidden prompt asks the "

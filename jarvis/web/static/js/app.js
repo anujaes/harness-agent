@@ -1,5 +1,5 @@
 /** Application bootstrap */
-import { $, escapeHtml, showToast } from './utils.js';
+import { $, escapeHtml, showToast, BASE } from './utils.js';
 import { icon, hydrateIcons } from './icons.js';
 import { store, loadUiPrefs } from './store.js';
 import { connectEvents, fetchState, hasToken, transportMode } from './api.js';
@@ -9,16 +9,21 @@ import { initComposer, fillPrompt, submitPrompt, insertQuote, enhanceMessage } f
 import { initMedia, openFilePicker } from './media.js';
 import { initStatus, setConnected } from './status.js';
 import { initSidebar } from './sidebar.js';
+import { initProjects, projectGone, serverLost } from './projects.js';
+import { initFolders } from './folders.js';
 import { initInspector, toggleInspector } from './inspector.js';
 import { initChanges } from './changes.js';
 import { initActivity } from './activity.js';
 import { initModals } from './modal.js';
+import { initDialogs } from './dialog.js';
 import { initPalette, runItem } from './palette.js';
 import { initPickers, openPickerByKind } from './pickers.js';
 import { initProviders } from './providers.js';
 import { initMcp } from './mcp.js';
 import { initSkills } from './skills.js';
 import { initCommands } from './commands.js';
+import { initPin } from './pin.js';
+import { initQueue } from './queue.js';
 import { initPrompts } from './prompts.js';
 import { initTheme, toggleTheme } from './theme.js';
 import { initQuickbar } from './quickbar.js';
@@ -51,6 +56,12 @@ function renderStarters() {
   });
 }
 
+/** Put `text` in the message box without losing what's already typed there. */
+function keepDraftAndFill(text) {
+  const now = $('prompt')?.value.trim();
+  fillPrompt(now ? `${now}\n\n${text}` : text);
+}
+
 function showGate(title, text) {
   const gate = $('gate');
   if (!gate) return;
@@ -74,10 +85,10 @@ async function recoverToken() {
       sessionStorage.setItem(KEY, String(Date.now()));
     } catch { /* ignore */ }
     try {
-      const res = await fetch('/', { redirect: 'follow', cache: 'no-store' });
+      const res = await fetch(`${BASE}/`, { redirect: 'follow', cache: 'no-store' });
       const fresh = new URL(res.url).searchParams.get('token');
       if (res.ok && fresh && fresh !== new URLSearchParams(location.search).get('token')) {
-        location.replace(`/?token=${encodeURIComponent(fresh)}`);
+        location.replace(`${BASE}/?token=${encodeURIComponent(fresh)}`);
         return;
       }
     } catch { /* server down — fall through */ }
@@ -114,6 +125,7 @@ function boot() {
 
   loadUiPrefs();
   initModals();
+  initDialogs();
   initChat();
   initQuote({ onQuote: insertQuote });
   initQr();
@@ -121,6 +133,8 @@ function boot() {
   initComposer({ onCatalogItem: runItem, onOpenPicker: openPickerByKind });
   initMedia({ onOpenPicker: openPickerByKind });
   initSidebar({ onOpenPicker: openPickerByKind });
+  initProjects({ onEvent: handleEvent });
+  initFolders();
   initInspector();
   initChanges();
   initActivity();
@@ -130,6 +144,8 @@ function boot() {
   initMcp();
   initSkills();
   initCommands();
+  initPin();
+  initQueue({ onFill: keepDraftAndFill });
   initPrompts();
   initQuickbar({ onOpenPicker: openPickerByKind });
   initShortcuts({ newChat, openPicker: openPickerByKind, toggleTheme, enhance: enhanceMessage, toggleInspector });
@@ -146,6 +162,8 @@ function boot() {
     },
     onResync: invalidateSnapshot,
     onUnauthorized: recoverToken,
+    onGone: projectGone,
+    onServerLost: serverLost,
   });
 
   // Focus the composer on desktop so typing just works.

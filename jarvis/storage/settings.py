@@ -12,7 +12,7 @@ run ``/settings reload`` (or restart) to pick up changes::
       "model": "sonnet-4-6",
       "theme": "red",
       "skills": { "global": false },
-      "mcp":    { "global": false },
+      "mcp":    { "global": false, "enabled": true, "disabled": [] },
       "think":  { "mode": true, "effort": "high" },
       "trace":  { "on": true }
     }
@@ -58,13 +58,15 @@ DEFAULTS: dict[str, Any] = {
     "theme":  "red",
     "agent":  {"active": "", "global": True},   # global agents visible by default
     "skills": {"global": False},
-    "mcp":    {"global": False},
+    "mcp":    {"global": False, "enabled": True, "disabled": []},  # enabled = MCP as a whole · disabled = servers switched off
     "think":  {"mode": True, "effort": "high"},
     "trace":  {"on": True},   # show thinking + tool panels in TUI transcript
     "pin":    {"enabled": True},  # inject pinned.txt into every system prompt
     "pet":    {"enabled": True, "nudges": True, "notify": True},  # the TUI pets
-    "ui":     {"sticky_prompt": True},  # pin your prompt above a long reply
-    "web":    {"qr": True, "tunnel": "auto"},  # corner QR · Anywhere provider (auto|cloudflare|ngrok)
+    "ui":     {"sticky_prompt": True},
+    # parallel subagents (spawn_agents): on/off · agents running at once · model requests per agent · minutes per agent
+    "subagents": {"enabled": True, "max_parallel": 6, "max_steps": 40, "timeout_min": 20},  # pin your prompt above a long reply
+    "web":    {"qr": True, "tunnel": "auto", "keep_awake": True},  # corner QR · Anywhere provider (auto|cloudflare|ngrok) · keep this computer awake while Anywhere runs
 }
 
 
@@ -166,6 +168,13 @@ def _valid_themes() -> tuple[str, ...]:
         return _VALID_THEMES
 
 
+_INT_RANGES = {
+    "subagents.max_parallel": (1, 6),
+    "subagents.max_steps": (4, 200),
+    "subagents.timeout_min": (1, 120),
+}
+
+
 def _coerce(path: str, value: Any) -> Any:
     """Light validation/coercion for known paths."""
     if path == "theme":
@@ -182,8 +191,13 @@ def _coerce(path: str, value: Any) -> Any:
         if value not in _VALID_THINK_EFFORTS:
             raise ValueError(f"think.effort must be one of {_VALID_THINK_EFFORTS}")
         return value
-    if path in ("skills.global", "mcp.global", "agent.global", "think.mode", "pin.enabled", "ui.mouse",
-                "ui.sticky_prompt", "pet.enabled", "pet.nudges", "pet.notify", "web.qr"):
+    if path == "mcp.disabled":
+        if not isinstance(value, (list, tuple)) or not all(isinstance(v, str) for v in value):
+            raise ValueError("mcp.disabled must be a list of server names")
+        return sorted({v.strip() for v in value if v.strip()})
+    if path in ("skills.global", "mcp.global", "mcp.enabled", "agent.global", "think.mode", "pin.enabled", "ui.mouse",
+                "ui.sticky_prompt", "pet.enabled", "pet.nudges", "pet.notify", "web.qr", "web.keep_awake",
+                "subagents.enabled"):
         if isinstance(value, str):
             v = value.strip().lower()
             if v in ("true", "1", "yes", "on"):
@@ -194,6 +208,15 @@ def _coerce(path: str, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ValueError(f"{path} must be a boolean")
         return value
+    if path in _INT_RANGES:
+        lo, hi = _INT_RANGES[path]
+        try:
+            n = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"{path} must be a whole number ({lo}–{hi})") from None
+        if not lo <= n <= hi:
+            raise ValueError(f"{path} must be between {lo} and {hi}")
+        return n
     if path in ("model", "provider"):
         if not isinstance(value, str):
             raise ValueError(f"{path} must be a string")

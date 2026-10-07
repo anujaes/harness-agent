@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from . import hub, registry
 from .bridge import CLOSE_SENTINEL, WebBridge
 from .pickers_api import (
     get_skill,
@@ -65,6 +66,8 @@ def _normalize_answers(result: dict[str, Any]) -> dict[str, Any]:
 class WebHandler(BaseHTTPRequestHandler):
     bridge: WebBridge
     app: JarvisTUI | None = None
+    instance_id: str | None = None  # this server's entry in ``registry`` (None: not listed)
+    _base = ""  # "/p/<id>" while serving a page opened through the project switcher
 
     def log_message(self, *_args: Any) -> None:
         return
@@ -160,6 +163,39 @@ class WebHandler(BaseHTTPRequestHandler):
         path = parsed.path.rstrip("/") or "/"
         qs = urllib.parse.parse_qs(parsed.query)
         return path, qs
+
+    def _resolve_project(self, path: str) -> tuple[str, str]:
+        """Strip ``/p/<id>``: ``(path, id of another project or "")``.
+
+        Sets ``_base`` so redirects keep the prefix. ``/p/<this server's id>``
+        is just this server; ``/static`` is shared by every project.
+        """
+        self._base = ""
+        project = hub.split_project_path(path)
+        if project is None:
+            return path, ""
+        pid, rest = project
+        if rest.startswith("/static/"):
+            return rest, ""
+        self._base = f"/p/{pid}"
+        return (rest.rstrip("/") or "/"), ("" if pid == self.instance_id else pid)
+
+    def _request_hostname(self) -> str | None:
+        """The host name this request was sent to, without the port (``[::1]`` kept bracketed)."""
+        host = (self.headers.get("Host") or "").strip()
+        if host.startswith("["):
+            end = host.find("]")
+            name = host[: end + 1] if end > 0 else ""
+        else:
+            name = host.split(":", 1)[0]
+        return name if re.fullmatch(r"[A-Za-z0-9.\-]+|\[[0-9A-Fa-f:.]+\]", name or "") else None
+
+    def _forward_to_project(self, pid: str, *, close: bool = False) -> None:
+        record = registry.get(pid)
+        if record is None:
+            self._send_json(404, {"error": "That project is no longer running."}, close=close)
+            return
+        hub.forward(self, record, self.path[len(f"/p/{pid}"):])
 
     def _query_str(self, qs: dict[str, list[str]], key: str, default: str = "") -> str:
         return (qs.get(key) or [default])[0]
@@ -430,6 +466,15 @@ class WebHandler(BaseHTTPRequestHandler):
                 return
             self._send_bytes(200, qr_svg(url).encode("utf-8"), "image/svg+xml")
             return
+        if path == "/api/subagents":
+            from .state_api import subagents_board
+
+            board = subagents_board(self._query_str(qs, "id"))
+            if board is None:
+                self._send_json(404, {"error": "no agents board for this tool call"})
+            else:
+                self._send_json(200, board)
+            return
         if path == "/api/tool-output":
             from .state_api import tool_output_text
 
@@ -458,6 +503,11 @@ class WebHandler(BaseHTTPRequestHandler):
 
             fid = self._query_str(qs, "id") or None
             self._send_json(200, {"patch": file_changes.patch_text(fid)})
+            return
+        if path == "/api/pin":
+            from ..storage import pin as pin_store
+
+            self._send_json(200, pin_store.public())
             return
         if path == "/api/providers":
             from .providers_api import list_providers
@@ -622,10 +672,46 @@ class WebHandler(BaseHTTPRequestHandler):
             self._handle_prompt(data)
             return
 
+        if path == "/api/pin":
+            # Pinned context: runs on the terminal's thread; every page refreshes.
+            result = self.bridge.request_action("pin", data)
+            if not isinstance(result, dict):
+                result = {"ok": False, "error": "invalid response"}
+            if result.get("pin") is not None:
+                self.bridge.emit("pin", result["pin"])
+            self._send_json(200, result)
+            return
+
+        if path == "/api/queue":
+            # Edit / remove / "send now" a queued message (``prompt_queue.apply_op``).
+            result = self.bridge.request_action("queue", data)
+            if not isinstance(result, dict):
+                result = {"ok": False, "error": "invalid response"}
+            from .. import prompt_queue
+
+            body = {**result, "items": prompt_queue.labels(), "entries": prompt_queue.public()}
+            self.bridge.emit("queue", {"items": body["items"], "entries": body["entries"]})
+            self._send_json(200, body)
+            return
+
         if path == "/api/upload/remove":
             from .. import media
 
             self._send_json(200, {"ok": media.remove(str(data.get("id") or ""))})
+            return
+
+        if path == "/api/subagents/stop":
+            # One parallel agent (``agent`` = its index) or the whole team.
+            from .. import subagents
+
+            agent = data.get("agent")
+            try:
+                index = None if agent is None or agent == "" else int(agent)
+            except (TypeError, ValueError):
+                self._send_json(400, {"ok": False, "error": "agent must be a number"})
+                return
+            ok = subagents.stop(str(data.get("id") or ""), index)
+            self._send_json(200, {"ok": ok})
             return
 
         if path == "/api/cancel":
@@ -663,9 +749,15 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if path == "/api/settings":
             updated = self.bridge.request_settings(data)
+            # A setting the current model can't take: say why (the page toasts
+            # it and shows the real state from the snapshot below).
+            error = updated.pop("error", "") if isinstance(updated, dict) else ""
             if updated:
                 self.bridge.emit("settings", updated)
-            self._send_json(200, {"ok": True, "settings": self._snapshot()})
+            body = {"ok": True, "settings": self._snapshot()}
+            if error:
+                body["error"] = str(error)
+            self._send_json(200, body)
             return
 
         self.send_response(404)
@@ -673,17 +765,26 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         path, qs = self._parse_query()
+        path, foreign = self._resolve_project(path)
 
         if path.startswith("/static/"):
             self._serve_static(path)
             return
 
         if path == "/":
+            if foreign and registry.get(foreign) is None:
+                # That project closed since the link was made: back to this one.
+                query = urllib.parse.urlparse(self.path).query
+                self.send_response(302)
+                self.send_header("Location", f"/?{query}" if query else "/")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
             if not self._authorized():
                 if self._may_hand_out_token():
                     # Same network: redirect so the local QR can omit the token.
                     self.send_response(302)
-                    self.send_header("Location", f"/?token={self.bridge.token}")
+                    self.send_header("Location", f"{self._base}/?token={self.bridge.token}")
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
@@ -694,6 +795,46 @@ class WebHandler(BaseHTTPRequestHandler):
 
         if not self._authorized():
             self._send_json(401, {"error": "unauthorized"})
+            return
+
+        if foreign:
+            self._forward_to_project(foreign)
+            return
+
+        if path == "/api/projects/launch":
+            from . import launcher
+
+            found = launcher.launch_status(self._query_str(qs, "id"))
+            if found is None:
+                self._send_json(404, {"ok": False, "error": "That launch is no longer known."})
+            else:
+                self._send_json(200, {"ok": True, "launch": found})
+            return
+
+        if path == "/api/fs/dirs":
+            from . import fs_api
+
+            try:
+                self._send_json(200, fs_api.list_dirs(
+                    self._query_str(qs, "path"), show_hidden=self._query_str(qs, "hidden") == "1",
+                ))
+            except fs_api.FsError as exc:
+                self._send_json(200, {"ok": False, "code": exc.code, "error": str(exc)})
+            return
+
+        if path == "/api/fs/start":
+            from . import fs_api
+
+            self._send_json(200, {"ok": True, "home": str(fs_api.home()), "recent": fs_api.recent_dirs(),
+                                  "shortcuts": fs_api.shortcuts()})
+            return
+
+        if path == "/api/projects":
+            self._send_json(200, hub.projects_payload(
+                self.instance_id,
+                direct_host=self._request_hostname() if self._may_hand_out_token() else None,
+                link=str(getattr(self.app, "_web_public_link", "") or getattr(self.app, "_web_primary_url", "") or ""),
+            ))
             return
 
         if path == "/api/events":
@@ -721,9 +862,14 @@ class WebHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path, _qs = self._parse_query()
+        path, foreign = self._resolve_project(path)
 
         if not self._authorized():
             self._send_json(401, {"error": "unauthorized"}, close=path == "/api/upload")
+            return
+
+        if foreign:  # the body is streamed to that project, not read here
+            self._forward_to_project(foreign, close=True)
             return
 
         if path == "/api/upload":  # raw file body, not JSON
@@ -731,6 +877,34 @@ class WebHandler(BaseHTTPRequestHandler):
             return
 
         data = self._read_json()
+
+        if path in ("/api/projects/open", "/api/projects/stop"):
+            # Start / stop another Jarvis — this server's job, whichever project is shown.
+            from . import launcher
+
+            if path.endswith("/open"):
+                result = launcher.open_project(str(data.get("path") or ""), reuse=bool(data.get("reuse", True)))
+            else:
+                result = launcher.stop_project(str(data.get("id") or ""))
+            self._send_json(200, result)
+            return
+
+        if path == "/api/cwd":
+            # "Move this chat here": not while a turn runs (its tools work in the old folder).
+            if self._busy():
+                self._send_json(200, {"ok": False, "code": "busy",
+                                      "error": "Jarvis is working. Wait for it to finish, or stop it first."})
+                return
+            result = self.bridge.request_action("cwd_change", {"path": str(data.get("path") or "")})
+            if not isinstance(result, dict):
+                result = {"ok": False, "error": "invalid response"}
+            if result.get("ok") and not result.get("unchanged"):
+                try:
+                    self.bridge.emit("state", state_fields(busy=self._busy()))
+                except Exception:
+                    pass
+            self._send_json(200, result)
+            return
 
         if path.startswith("/api/"):
             self._handle_api_post(path, data)

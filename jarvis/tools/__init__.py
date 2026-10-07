@@ -1,5 +1,5 @@
 """Tool registry: TOOLS (schemas) and FUNC (name -> callable)."""
-from .files import read_file, write_file, edit_file, multi_edit
+from .files import read_file, read_file_tool, write_file, edit_file, multi_edit
 from .read_document import read_document
 from .dirs import list_dir, glob_files, rank_files, fast_find
 from .shell import run_bash
@@ -48,6 +48,7 @@ from .extensions import (
     EXTENSION_TOOLS, skill_install, skill_remove, mcp_add, mcp_list, mcp_connect, mcp_remove,
 )
 from .ask_user import ask_user_question
+from ..subagents import SUBAGENT_TOOLS, spawn_agents
 from .plan import exit_plan_mode, PLAN_TOOLS, PLAN_MODE_ALLOWED
 from .schemas_core import (
     CORE_TOOLS, CONTEXT_TOOLS, INTERNET_TOOLS, OCR_TOOLS, VISION_TOOLS, BACKGROUND_TOOLS,
@@ -58,9 +59,11 @@ from .schemas_core import (
 # when servers connect. Import is deferred to avoid circular imports.
 MCP_TOOLS: list[dict] = []
 TOOLS = (CORE_TOOLS + BACKGROUND_TOOLS + VISION_TOOLS + DESKTOP_TOOLS + INTERNET_TOOLS + MEMORY_TOOLS
-         + LESSON_TOOLS + SKILL_TOOLS + EXTENSION_TOOLS + OCR_TOOLS + LOOP_TOOLS + MCP_TOOLS)
+         + LESSON_TOOLS + SKILL_TOOLS + EXTENSION_TOOLS + OCR_TOOLS + LOOP_TOOLS + SUBAGENT_TOOLS
+         + MCP_TOOLS)
 TOOL_GROUPS: dict[str, list[dict]] = {
     "core": CORE_TOOLS,
+    "agents": SUBAGENT_TOOLS,
     "background": BACKGROUND_TOOLS,
     "vision": VISION_TOOLS,
     "loop": LOOP_TOOLS,
@@ -82,7 +85,7 @@ TOOL_NAME_TO_GROUP: dict[str, str] = {
 }
 
 FUNC = {
-    "read_file": read_file, "read_document": read_document, "write_file": write_file,
+    "read_file": read_file_tool, "read_document": read_document, "write_file": write_file,
     "edit_file": edit_file, "multi_edit": multi_edit,
     "list_dir": list_dir, "run_bash": run_bash, "search_code": search_code,
     "glob_files": glob_files, "rank_files": rank_files,
@@ -130,6 +133,8 @@ FUNC = {
     "ask_user_question": ask_user_question,
     # plan mode gate
     "exit_plan_mode": exit_plan_mode,
+    # parallel subagents
+    "spawn_agents": spawn_agents,
 }
 
 # ── MCP registry integration ─────────────────────────────────────────────

@@ -12,11 +12,12 @@ COMMANDS = [
     ("/help", "open the help reference (type to search)"),
     ("/new", "start a fresh conversation (keeps pinned context)"),
     ("/reset", "clear conversation"),
-    ("/retry", "re-send last user message"),
     ("/history", "show message summary"),
     ("/export ", "export conversation as markdown"),
     ("/session", "open the session modal (resume / delete handled inside)"),
     ("/clear", "clear the terminal screen"),
+    ("/team ", "run a big task with 2-6 agents working in parallel — /team <task>"),
+    ("/subagents", "parallel agents — status · on|off · max <1-6> · steps · timeout · stop"),
     ("/loop", "repeat a task — /loop <task> (self-paced) · /loop 5m <task> · /loop stop"),
     ("/exit", "quit"),
     # Context

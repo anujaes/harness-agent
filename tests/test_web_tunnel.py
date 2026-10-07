@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import email.message
+import os
+import subprocess
+import sys
 import time
 
 import pytest
@@ -90,6 +93,98 @@ def test_tunnel_goes_live_and_stop_kills_the_process(fake_cloudflared):
     assert _wait(lambda: proc.poll() is not None)
 
 
+def _fake_caffeinate(fake_program, tmp_path, monkeypatch):
+    """A ``caffeinate`` stand-in that logs its arguments and then waits."""
+    log = tmp_path / "caffeinate.args"
+    script = fake_program("caffeinate", f"""
+        import sys, time
+        open({str(log)!r}, "w", encoding="utf-8").write(" ".join(sys.argv[1:]))
+        time.sleep(30)
+    """)
+    # Exercise the macOS branch on any OS: it is the one that looks for caffeinate.
+    monkeypatch.setattr(tun, "IS_WINDOWS", False)
+    monkeypatch.setattr(tun.shutil, "which", lambda n: script if n == "caffeinate" else None)
+    return log
+
+
+def test_tunnel_holds_the_mac_awake_until_stopped(fake_cloudflared, fake_program, tmp_path, monkeypatch):
+    log = _fake_caffeinate(fake_program, tmp_path, monkeypatch)
+    t = tun.Tunnel(provider="cloudflare", port=8765)
+    t.start()
+    assert _wait(lambda: t.status == "live" and t.awake)
+    assert _wait(lambda: log.exists() and log.read_text(encoding="utf-8"))
+    args = log.read_text(encoding="utf-8").split()
+    assert args[:2] == ["-i", "-s"] and args[2] == "-w" and args[3] == str(os.getpid())
+    awake = t._awake
+    t.stop()
+    assert not t.awake
+    assert _wait(lambda: awake.poll() is not None)
+
+
+def test_keep_awake_can_be_turned_off(fake_cloudflared, fake_program, tmp_path, monkeypatch):
+    log = _fake_caffeinate(fake_program, tmp_path, monkeypatch)
+    t = tun.Tunnel(provider="cloudflare", port=8765, keep_awake=False)
+    t.start()
+    assert _wait(lambda: t.status == "live")
+    assert not t.awake and not log.exists()
+    t.stop()
+
+
+def test_failed_tunnel_lets_the_mac_sleep_again(fake_program, tmp_path, monkeypatch):
+    _fake_caffeinate(fake_program, tmp_path, monkeypatch)
+    script = fake_program("cloudflared", "import sys; sys.exit(1)")
+    monkeypatch.setattr(tun, "binary_for", lambda p: script)
+    t = tun.Tunnel(provider="cloudflare", port=8765)
+    t.start()
+    assert _wait(lambda: t.status == "error")
+    assert not t.awake
+
+
+def test_no_caffeinate_means_no_hold(monkeypatch):
+    monkeypatch.setattr(tun, "IS_WINDOWS", False)
+    monkeypatch.setattr(tun.shutil, "which", lambda n: None)
+    assert tun.keep_awake_command() is None
+
+
+def test_windows_keep_awake_is_a_helper_tied_to_jarvis(monkeypatch):
+    """Windows has no caffeinate: a Python helper holds the execution state."""
+    monkeypatch.setattr(tun, "IS_WINDOWS", True)
+    monkeypatch.setattr(tun.shutil, "which", lambda n: None)
+    cmd = tun.keep_awake_command(4242)
+    assert cmd[0] == sys.executable and cmd[1] == "-c"
+    assert "SetThreadExecutionState" in cmd[2]
+    assert cmd[-1] == "4242"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="SetThreadExecutionState is Windows-only")
+def test_windows_keep_awake_helper_ends_with_the_process_it_watches():
+    """Like ``caffeinate -w``: a crashed Jarvis must never leave the PC awake."""
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1)"])
+    helper = subprocess.Popen(tun.keep_awake_command(owner.pid))
+    try:
+        time.sleep(0.3)
+        assert helper.poll() is None  # holding while the owner lives
+        owner.wait(timeout=5)
+        assert _wait(lambda: helper.poll() is not None)
+        assert helper.returncode == 0
+    finally:
+        for p in (owner, helper):
+            if p.poll() is None:
+                p.kill()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows keep-awake path")
+def test_tunnel_holds_the_pc_awake_until_stopped(fake_cloudflared):
+    t = tun.Tunnel(provider="cloudflare", port=8765)
+    t.start()
+    assert _wait(lambda: t.status == "live" and t.awake)
+    awake = t._awake
+    t.stop()
+    assert not t.awake
+    assert _wait(lambda: awake.poll() is not None)
+
+
+
 def test_tunnel_that_exits_early_reports_why(fake_program, monkeypatch):
     script = fake_program("cloudflared", """
         import sys
@@ -97,6 +192,7 @@ def test_tunnel_that_exits_early_reports_why(fake_program, monkeypatch):
         sys.exit(1)
     """)
     monkeypatch.setattr(tun, "binary_for", lambda p: script)
+
     t = tun.Tunnel(provider="cloudflare", port=8765)
     t.start()
     assert _wait(lambda: t.status == "error")
@@ -208,3 +304,9 @@ def test_close_releases_a_waiting_poll():
     _threading.Timer(0.2, b.close).start()
     body = _json.loads(b.poll(b.latest_seq(), timeout=5))
     assert body.get("closed") is True
+
+
+@pytest.mark.parametrize("windows, word", [(False, "Mac"), (True, "PC")])
+def test_awake_label_names_this_computer(monkeypatch, windows, word):
+    monkeypatch.setattr(tun, "IS_WINDOWS", windows)
+    assert tun.awake_label() == f"{word} kept awake (display may sleep)"

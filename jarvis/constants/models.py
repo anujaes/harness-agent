@@ -5,7 +5,7 @@ jarvis/constants/providers.py — add or change models there.
 """
 import os
 
-from .providers import HARNESS_AGENT_DEFAULT_MODEL
+from .providers import HARNESS_AGENT_FALLBACK_MODEL
 
 
 def _env_int(name: str, default: int, min_value: int, max_value: int) -> int:
@@ -16,11 +16,17 @@ def _env_int(name: str, default: int, min_value: int, max_value: int) -> int:
     return max(min_value, min(max_value, value))
 
 
-VERSION = "0.2.5"
-# Startup model: CLAUDE_MODEL env override, else the free Harness Agent default.
-MODEL = os.getenv("CLAUDE_MODEL", HARNESS_AGENT_DEFAULT_MODEL)
+VERSION = "0.3.1"
+# Startup model: CLAUDE_MODEL env override, else the free tier's fallback until
+# startup picks from the live list (harness_agent_default_model).
+MODEL = os.getenv("CLAUDE_MODEL", HARNESS_AGENT_FALLBACK_MODEL)
 MAX_TOOL_OUTPUT = 6000   # trimmed from 15000 — cuts tool-result token cost ~60%
 MAX_FILE_READ = 200_000
+# What one read_file call hands the model: numbered lines, at most this many
+# lines / characters (a note says where to continue), very long lines clipped.
+READ_MAX_LINES = _env_int("HARNESS_READ_MAX_LINES", 2000, 50, 20_000)
+READ_MAX_CHARS = _env_int("HARNESS_READ_MAX_CHARS", 60_000, 4_000, 400_000)
+READ_LINE_MAX_CHARS = 2000
 MAX_PARALLEL_TOOLS = _env_int("HARNESS_MAX_PARALLEL_TOOLS", 64, 1, 64)
 
 # ── Numeric / behavior constants ───────────────────────────────────────────────
@@ -43,7 +49,11 @@ DEFAULT_RETRIES = 3
 # provider rejects this value.
 API_MAX_TOKENS = _env_int("HARNESS_API_MAX_TOKENS", 32000, 1024, 200_000)
 THINKING_BUDGET_TOKENS = 4000
-THINK_EFFORTS = ("xhigh", "high", "medium", "low", "minimal", "none")
+# Every effort a provider can name, highest first (the picker's order). Which of
+# them a given model takes is discovered at runtime — see auth/thinking_caps.py.
+THINK_EFFORTS = ("ultra", "max", "xhigh", "high", "medium", "low", "minimal", "none")
+# Efforts offered for a model nothing is known about (the pre-discovery list).
+THINK_EFFORTS_LEGACY = ("xhigh", "high", "medium", "low", "minimal")
 DEFAULT_THINK_EFFORT = "high"
 SPECK_MAX_CHARS = 8000
 CLICK_WAIT_ATTEMPTS = 20
@@ -76,7 +86,7 @@ SEARCH_DEFAULT_MAX_RESULTS = 8
 SEARCH_MATCH_CAP = 50
 
 # Connected Context Pack — max chars for the resolve_context / read_bundle output
-CONTEXT_BUNDLE_MAX_CHARS = _env_int("HARNESS_BUNDLE_MAX_CHARS", 120_000, 8_000, 500_000)
+CONTEXT_BUNDLE_MAX_CHARS = _env_int("HARNESS_BUNDLE_MAX_CHARS", 80_000, 8_000, 500_000)
 CONTEXT_BUNDLE_PER_FILE_MAX = _env_int("HARNESS_BUNDLE_PER_FILE_MAX", 20_000, 500, 100_000)
 # full | skeleton | manifest — used when the tool omits an explicit mode
 BUNDLE_DEFAULT_MODE = (os.getenv("HARNESS_BUNDLE_MODE", "skeleton") or "skeleton").strip().lower()

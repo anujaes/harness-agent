@@ -76,6 +76,41 @@ def _isolated_models_dev(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _mcp_switches_reset():
+    """A test that switches MCP / a server off must not leave it off for the
+    next one (the choice lives in the settings singleton)."""
+    yield
+    try:
+        from jarvis.mcp import toggle
+        from jarvis.storage.settings import get_settings
+
+        if not toggle.mcp_enabled() or toggle.disabled_servers():
+            get_settings().reset("mcp.enabled")
+            get_settings().reset("mcp.disabled")
+    except Exception:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _request_shape_reset():
+    """Per-process request state — sticky tool groups, the per-turn system
+    prompt, prompt caching switched off after a refusal, files the model has
+    seen — must not leak from one test into the next."""
+    def _reset():
+        from jarvis.repl import prompt_cache, system
+        from jarvis.tools import files, router
+
+        router.reset_sticky_groups()
+        system.invalidate_system_cache()
+        prompt_cache._disabled_reason = None
+        files._seen.clear()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 def _no_macos_permission_prompts(monkeypatch):
     """Never let a test pop the macOS Screen Recording prompt or open System
     Settings on the developer's machine."""

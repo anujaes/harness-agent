@@ -143,7 +143,8 @@ def handle_context(c: str, arg: str):
         return True, None
     if c == "/notes":
         if NOTES_FILE.exists():
-            console.print(Panel(Markdown(NOTES_FILE.read_text()),
+            # /note appends UTF-8; a strict cp1252 read (Windows default) can crash on it.
+            console.print(Panel(Markdown(NOTES_FILE.read_text(encoding="utf-8", errors="replace")),
                                 title="✎ notes", border_style="yellow"))
         else:
             console.print("[dim]no notes yet[/]")

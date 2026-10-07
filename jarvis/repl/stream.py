@@ -1,6 +1,8 @@
 """Call the configured model API with streaming + retry + OAuth refresh."""
 import ctypes
+import json
 import os
+import re
 import threading
 import time
 from typing import Any, Dict
@@ -41,8 +43,12 @@ from ..auth.codex_oauth_tokens import load_codex_oauth_tokens, codex_oauth_refre
 from ..auth.client import _build_client_from_mode
 from .. import state
 from .system import build_system
+from . import context_budget, prompt_cache, thinking as think_request
+from ..auth.codex_client import CodexResponseError
 from ..media import materialize_uploads
-from .trim import anthropic_wire_messages, prune_tool_images, trim_messages
+from .trim import (
+    _content_chars, _total_chars, anthropic_wire_messages, prune_tool_images, trim_messages,
+)
 from .render import assistant_model_label
 from .stream_display import RichAssistantStreamDisplay
 from .turn_progress import report_turn_phase
@@ -145,8 +151,20 @@ def _iter_live_deltas(stream):
         return
 
     if hasattr(stream, "get_final_message") and hasattr(stream, "__iter__"):
+        tool_key = None
         for event in stream:
             et = getattr(event, "type", None)
+            if et == "content_block_start":
+                block = getattr(event, "content_block", None)
+                if getattr(block, "type", None) == "tool_use":
+                    tool_key = getattr(event, "index", None)
+                    yield "tool_input", (tool_key, getattr(block, "name", "") or "", "")
+                continue
+            if et == "input_json":
+                partial = getattr(event, "partial_json", "") or ""
+                if partial:
+                    yield "tool_input", (tool_key, "", partial)
+                continue
             if et == "thinking":
                 thinking = getattr(event, "thinking", "") or ""
                 if thinking:
@@ -160,6 +178,64 @@ def _iter_live_deltas(stream):
     for chunk in stream.text_stream:
         if chunk:
             yield "text", chunk
+
+
+_PATH_IN_ARGS = re.compile(r'"(?:path|file_path)"\s*:\s*"([^"]{1,200})"')
+_CMD_IN_ARGS = re.compile(r'"(?:cmd|command)"\s*:\s*"([^"]{1,60})')
+
+
+def _fmt_size(chars: int) -> str:
+    return f"{chars / 1024:.1f} KB" if chars >= 1024 else f"{chars} chars"
+
+
+def tool_input_label(name: str, head: str, chars: int) -> str:
+    """Activity text while a tool call's arguments are still streaming in —
+    a big write_file takes a while and used to look like a stuck request."""
+    m = _PATH_IN_ARGS.search(head or "")
+    path = m.group(1) if m else ""
+    size = _fmt_size(chars)
+    if name == "write_file":
+        return f"Writing {path or 'a file'}… {size}"
+    if name in ("edit_file", "multi_edit"):
+        return f"Preparing edit{'s' if name == 'multi_edit' else ''}{' to ' + path if path else ''}… {size}"
+    if name in ("run_bash", "run_bg"):
+        c = _CMD_IN_ARGS.search(head or "")
+        return f"Writing command{': ' + c.group(1) if c else ''}… {size}"
+    return f"Preparing {name or 'tool'} call… {size}"
+
+
+def check_tool_inputs(final) -> None:
+    """Refuse tool calls whose arguments didn't fully arrive: the reply was
+    cut off by the output limit, or the streamed JSON is invalid (eager input
+    streaming no longer has the API validate it). They get an error result
+    instead of running on half their input."""
+    from .render import mark_tool_call_unusable
+
+    blocks = [b for b in (getattr(final, "content", None) or []) if getattr(b, "type", None) == "tool_use"]
+    if not blocks:
+        return
+    if getattr(final, "stop_reason", None) == "max_tokens":
+        mark_tool_call_unusable(
+            getattr(blocks[-1], "id", ""),
+            "this tool call was cut off by the model's output limit, so its arguments are "
+            "incomplete and it was NOT run. Make it smaller: write a large file in parts "
+            "(write_file a first part, then edit_file to append the rest).",
+        )
+    for b in blocks:
+        buf = getattr(b, "__json_buf", None)
+        if not buf:
+            continue
+        try:
+            parsed = json.loads(buf)
+        except (ValueError, TypeError):
+            parsed = None
+        if not isinstance(parsed, dict):
+            mark_tool_call_unusable(
+                getattr(b, "id", ""),
+                "the arguments for this tool call arrived as invalid or incomplete JSON, so it "
+                "was NOT run. Send it again with a valid JSON object (split very large content "
+                "into smaller calls).",
+            )
 
 
 # Models already told "thinking on but no separate reasoning" — say it once.
@@ -180,11 +256,23 @@ def _consume_live_text_stream(stream, panel_title: str) -> None:
     last_progress = [time.monotonic()]
     phase = [""]
 
+    tool_progress: dict = {}
+    current_tool = [None]
+    last_tool_report = [0.0]
+
+    def _tool_label() -> str:
+        tp = tool_progress.get(current_tool[0]) or {}
+        return tool_input_label(tp.get("name", ""), tp.get("head", ""), tp.get("chars", 0))
+
     def _idle_watch() -> None:
         while not stop_watch.wait(25.0):
             idle = time.monotonic() - last_progress[0]
             if idle >= 35:
-                if phase[0] == "thinking":
+                if phase[0] == "tool":
+                    report_turn_phase(
+                        f"{_tool_label()} — no new data for {int(idle)}s; Esc=cancel"
+                    )
+                elif phase[0] == "thinking":
                     report_turn_phase(
                         f"Still thinking ({int(idle)}s) — Esc=cancel"
                     )
@@ -219,6 +307,30 @@ def _consume_live_text_stream(stream, panel_title: str) -> None:
             last_progress[0] = time.monotonic()
             if not _got_first_delta:
                 globals()["_got_first_delta"] = True
+            if kind == "tool_input":
+                # A tool call's arguments streaming in (e.g. a whole file for
+                # write_file): show what's being written and how much so far.
+                key, name, delta = chunk
+                tp = tool_progress.setdefault(key, {"name": "", "head": "", "chars": 0})
+                if name:
+                    tp["name"] = name
+                if delta:
+                    tp["chars"] += len(delta)
+                    if len(tp["head"]) < 600:
+                        tp["head"] += delta[:600]
+                current_tool[0] = key
+                if phase[0] != "tool":
+                    phase[0] = "tool"
+                    if tui and thinking_started and think_flush:
+                        think_flush()
+                now = time.monotonic()
+                path_seen = not tp.get("path_seen") and bool(_PATH_IN_ARGS.search(tp["head"]))
+                if path_seen:
+                    tp["path_seen"] = True
+                if now - last_tool_report[0] >= 0.5 or (name and not delta) or path_seen:
+                    last_tool_report[0] = now
+                    report_turn_phase(_tool_label())
+                continue
             if kind == "thinking":
                 if phase[0] != "thinking":
                     phase[0] = "thinking"
@@ -602,6 +714,62 @@ def call_claude_stream():
             _worker_thread_id = 0
 
 
+def _usage_or_estimate(final, messages) -> tuple[int, int]:
+    """(input, output) tokens for one request: the provider's usage, or — when
+    it reported none (no usage chunk, OpenAI without ``include_usage``) — the
+    same chars/4 estimate a resumed session uses, so the counters never sit at
+    0 while a session runs."""
+    usage = getattr(final, "usage", None)
+    # Anthropic reports cached prompt tokens separately from input_tokens;
+    # the prompt's real size is all three (the OpenAI-style clients' usage
+    # objects carry no cache fields, so this is just input_tokens there).
+    uncached, cache_read, cache_write = prompt_cache.usage_counts(usage)
+    # OpenAI-style usage counts cached tokens inside input_tokens; Codex
+    # reports how many separately, for display only.
+    state.cache_read_tokens = cache_read or int(getattr(usage, "cached_input_tokens", 0) or 0)
+    state.cache_write_tokens = cache_write
+    in_tok = uncached + cache_read + cache_write
+    out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+    if in_tok or out_tok:
+        return in_tok, out_tok
+    blocks = [
+        b.model_dump() if hasattr(b, "model_dump") else b
+        for b in (getattr(final, "content", None) or [])
+    ]
+    return _total_chars(messages) // 4, _content_chars(blocks) // 4
+
+
+_last_fit_note: tuple = ()
+_eager_tools_off = False
+
+
+def _eager_tool_streaming_ok() -> bool:
+    """Only Anthropic's own API (key or Claude sign-in): proxies and other
+    Anthropic-wire providers may reject the field. HARNESS_EAGER_TOOLS=0 opts out."""
+    if _eager_tools_off or os.getenv("HARNESS_EAGER_TOOLS", "1").strip() == "0":
+        return False
+    return state.provider == PROVIDER_ANTHROPIC and isinstance(state.client, Anthropic)
+
+
+def _disable_eager_tool_streaming() -> None:
+    global _eager_tools_off
+    _eager_tools_off = True
+
+
+def _note_fit(used: int, limit: int, steps: list[str]) -> None:
+    """Say (once per change) that this request was shrunk to fit the window."""
+    global _last_fit_note
+    key = (state.current_session_id, tuple(steps))
+    if not steps or key == _last_fit_note:
+        return
+    _last_fit_note = key
+    pct = used * 100 // max(1, limit)
+    console.print(
+        f"[dim]Context ~{pct}% of what {state.MODEL} can take — {'; '.join(steps)} "
+        "for this request (the chat history itself is kept). /new starts fresh.[/]"
+    )
+
+
 def _call_claude_stream():
     # Check cancel flag before starting a new stream — allows Escape to
     # prevent the next stream from even starting after tool results.
@@ -617,32 +785,55 @@ def _call_claude_stream():
     if state.show_internal and not getattr(console, "renders_tool_rows", False):
         console.print(f"[dim]tool schemas: {len(tools)} selected[/]")
     vision = model_supports_images(state.MODEL)
-    messages = prune_tool_images(trim_messages(state.messages), vision=vision)
-    # Web attachments are references in history; the newest become real images now.
-    messages = materialize_uploads(messages, vision=vision)
-    if state.provider in (PROVIDER_ANTHROPIC, PROVIDER_OPENROUTER) or (
-        is_catalog_provider(state.provider) and isinstance(state.client, Anthropic)
-    ):
-        # History may hold another provider's replies (switched mid-session).
-        messages = anthropic_wire_messages(messages)
+    system = build_system()
+    fixed_tokens = context_budget.estimate_tokens([], system=system, tools=tools)
+
+    def _wire_messages(target: float | None = None, ceiling: int | None = None) -> list:
+        # Older context packs → short stubs; then, if the request would still
+        # overflow the model's window (or the provider said it did — *target*),
+        # fit it (context_budget). Only this copy changes, never history.
+        messages = context_budget.collapse_old_packs(trim_messages(state.messages))
+        limit = context_budget.input_limit()
+        used = fixed_tokens + context_budget.estimate_tokens(messages)
+        if target is not None or used > limit * context_budget.TRIGGER:
+            messages, steps = context_budget.fit_to_window(
+                messages, limit=limit, fixed_tokens=fixed_tokens,
+                target=target if target is not None else context_budget.TARGET,
+                ceiling=ceiling,
+            )
+            _note_fit(used, limit, steps)
+        messages = prune_tool_images(messages, vision=vision)
+        # Web attachments are references in history; the newest become real images now.
+        messages = materialize_uploads(messages, vision=vision)
+        if state.provider in (PROVIDER_ANTHROPIC, PROVIDER_OPENROUTER) or (
+            is_catalog_provider(state.provider) and isinstance(state.client, Anthropic)
+        ):
+            # History may hold another provider's replies (switched mid-session).
+            messages = anthropic_wire_messages(messages)
+        return messages
+
+    messages = _wire_messages()
     kwargs: Dict[str, Any] = dict(
-        model=state.MODEL, max_tokens=API_MAX_TOKENS, system=build_system(),
+        model=state.MODEL, max_tokens=API_MAX_TOKENS, system=system,
         messages=messages,
         tools=tools,
     )
-    if state.provider == PROVIDER_ANTHROPIC and claude_uses_adaptive_thinking(state.MODEL):
-        # Claude 5: adaptive thinking + effort; budget_tokens is a 400 there.
-        kwargs.update(claude_thinking_kwargs(state.think_mode, state.think_effort))
-    elif state.think_mode:
-        kwargs["thinking"] = {
-            "type": "enabled",
-            "budget_tokens": THINKING_BUDGET_TOKENS,
-        }
-        if state.provider in (PROVIDER_OPENCODE, PROVIDER_OPENCODE_ZEN):
-            kwargs["thinking"]["effort"] = state.think_effort
-    elif state.provider in (PROVIDER_OPENCODE, PROVIDER_OPENCODE_ZEN):
-        # OpenCode (DeepSeek, etc.) needs explicit {"type": "disabled"} to turn off thinking
-        kwargs["thinking"] = {"type": "disabled"}
+    if _eager_tool_streaming_ok():
+        # Stream tool arguments as they're generated: without it Anthropic
+        # buffers a whole write_file and sends it in one burst at the end —
+        # minutes of silence that look like a stuck request.
+        kwargs["tools"] = [{**t, "eager_input_streaming": True} for t in kwargs["tools"]]
+    if prompt_cache.enabled_for(state.provider, state.MODEL, state.client):
+        prompt_cache.apply(kwargs)
+    # Thinking: the user's preference, narrowed to what this model takes
+    # (repl/thinking.py). An adjusted setting is said once, never silently.
+    _think = think_request.apply(
+        kwargs, provider=state.provider, model=state.MODEL, client=state.client,
+        think_mode=state.think_mode, effort=state.think_effort,
+    )
+    _note = think_request.take_note(_think, state.provider, state.MODEL)
+    if _note:
+        console.print(f"[dim]{_note}[/]")
 
     global _current_stream, _worker_thread_id
     _worker_thread_id = threading.current_thread().ident or 0
@@ -651,6 +842,31 @@ def _call_claude_stream():
     claude_version_retried = False
     openrouter_model_retried = False
     codex_model_retried = False
+    cache_retried = False
+    thinking_retried = False
+    think_setting_retried = False
+    overflow_retries = 0
+
+    def _refit_after_overflow(err: BaseException) -> bool:
+        """The provider refused the prompt as too long: fit it harder and
+        send again (twice at most). True when a retry is ready."""
+        nonlocal overflow_retries
+        if overflow_retries >= 2 or not context_budget.is_context_overflow(err):
+            return False
+        overflow_retries += 1
+        target = context_budget.RETRY_TARGET / overflow_retries
+        # The provider counts more than our estimate: shrink below what it
+        # just refused, whatever our estimate of the limit says.
+        refused = fixed_tokens + context_budget.estimate_tokens(kwargs.get("messages") or [])
+        ceiling = int(refused * (0.6 if overflow_retries == 1 else 0.35))
+        console.print(
+            f"[yellow]The model's context window is full — shrinking older "
+            f"context and retrying ({overflow_retries}/2)…[/]"
+        )
+        kwargs["messages"] = _wire_messages(target=target, ceiling=ceiling)
+        if prompt_cache.enabled_for(state.provider, state.MODEL, state.client):
+            prompt_cache.apply(kwargs)
+        return True
     panel_title = f"jarvis · {assistant_model_label()}"
     for attempt in range(len(delays) + 1):
         try:
@@ -668,20 +884,18 @@ def _call_claude_stream():
                     final = stream.get_final_message()
                 finally:
                     _current_stream = None
+            check_tool_inputs(final)
             # input_tokens is the FULL prompt sent in THIS request (includes full
             # conversation history).  Accumulating it across turns massively
             # overcounts — just store the latest value which reflects total
             # *unique* input consumed so far.  Output tokens are per-turn unique
             # so accumulation is correct.
-            state.total_in = final.usage.input_tokens
-            state.total_out += final.usage.output_tokens
+            in_tok, out_tok = _usage_or_estimate(final, messages)
+            state.total_in = in_tok
+            state.total_out += out_tok
             # Anthropic's Usage exposes only input/output tokens; OpenCode's
             # fake Usage adds total_tokens. Compute when absent.
-            state.total_tokens = getattr(
-                final.usage,
-                "total_tokens",
-                final.usage.input_tokens + final.usage.output_tokens,
-            )
+            state.total_tokens = int(getattr(final.usage, "total_tokens", 0) or 0) or (in_tok + out_tok)
             return final
         except _STREAM_TIMEOUT_ERRORS:
             _current_stream = None
@@ -708,6 +922,54 @@ def _call_claude_stream():
             _stop_on_rate_limit(str(e))
             raise
         except APIStatusError as e:
+            if (
+                e.status_code == 400 and not cache_retried
+                and prompt_cache.has_markers(kwargs) and prompt_cache.refused_markers(e)
+            ):
+                # The endpoint doesn't take cache_control: send it plain, and
+                # stop adding markers for the rest of this process.
+                cache_retried = True
+                prompt_cache.disable(str(e)[:200])
+                prompt_cache.strip(kwargs)
+                console.print("[dim]provider refused prompt-cache markers — retrying without caching[/]")
+                continue
+            if e.status_code == 400 and "eager_input_streaming" in str(e) and _eager_tool_streaming_ok():
+                # This endpoint/model doesn't take the field: send tools plain.
+                _disable_eager_tool_streaming()
+                kwargs["tools"] = [
+                    {k: v for k, v in t.items() if k != "eager_input_streaming"} for t in kwargs["tools"]
+                ]
+                continue
+            if (
+                e.status_code == 400 and not thinking_retried
+                and prompt_cache.thinking_binding_error(e)
+            ):
+                # Replayed thinking the API won't accept (history edited, or
+                # blocks from another model). Documented recovery: drop the
+                # old thinking blocks and send again — the turn goes on.
+                thinking_retried = True
+                if prompt_cache.drop_thinking_blocks(state.messages):
+                    console.print(
+                        "[dim]earlier thinking blocks no longer valid for this "
+                        "conversation — dropped them, retrying…[/]"
+                    )
+                    kwargs["messages"] = _wire_messages()
+                    if prompt_cache.enabled_for(state.provider, state.MODEL, state.client):
+                        prompt_cache.apply(kwargs)
+                    continue
+            if e.status_code == 400 and not think_setting_retried:
+                # The provider refused the thinking level / thinking itself:
+                # remember it for this model and resend one step down.
+                think_setting_retried = True
+                _said = think_request.recover(
+                    e, kwargs, provider=state.provider, model=state.MODEL, client=state.client,
+                    think_mode=state.think_mode, effort=state.think_effort,
+                )
+                if _said:
+                    console.print(f"[dim]{_said}[/]")
+                    continue
+            if e.status_code in (400, 413) and _refit_after_overflow(e):
+                continue
             if is_catalog_provider(state.provider) and e.status_code in (401, 402, 403, 404):
                 _report_catalog_error(e.status_code, e)  # Anthropic-style catalog provider
             if e.status_code == 401:
@@ -849,6 +1111,8 @@ def _call_claude_stream():
             _stop_on_rate_limit(str(e))
             raise
         except OpenAIAPIStatusError as e:
+            if getattr(e, "status_code", None) in (400, 413) and _refit_after_overflow(e):
+                continue
             if getattr(e, "status_code", None) == 429:
                 _stop_on_rate_limit(str(e))
                 raise
@@ -890,4 +1154,15 @@ def _call_claude_stream():
                 report_turn_phase(f"Server {code} — retrying soon…")
                 console.print(f"[yellow]server {code}, retry...[/]")
                 time.sleep(delays[attempt]); continue
+            raise
+        except CodexResponseError as e:
+            if _refit_after_overflow(e):
+                continue
+            console.print(f"[red]Codex ended the reply with an error — {e}[/]")
+            raise HarnessAPIError(f"codex: {e}")
+        except Exception as e:
+            # Stream readers of the OpenAI-style clients surface provider
+            # errors as plain exceptions; "too long" ones are recoverable.
+            if _refit_after_overflow(e):
+                continue
             raise

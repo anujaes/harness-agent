@@ -16,6 +16,25 @@ def run_web_action(action: str, data: dict[str, Any], *, console_print: Callable
 
         return run_provider_action(action, data, console_print=console_print)
 
+    if action == "pin":
+        from .pin_api import apply
+
+        return apply(data)
+
+    if action == "queue":
+        from ..prompt_queue import apply_op
+
+        return apply_op(data)
+
+    if action == "cwd_change":
+        # "Move this chat here" (folder picker): the /cd command, done fully.
+        from .fs_api import change_cwd
+
+        result = change_cwd(str(data.get("path") or ""))
+        if result.get("ok") and not result.get("unchanged"):
+            console_print(f"[green]📁 moved to {result['display']}[/] [dim](from the web)[/]")
+        return result
+
     if action == "session_resume":
         sid = int(data.get("session_id") or 0)
         if sid <= 0:

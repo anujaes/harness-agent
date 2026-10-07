@@ -13,19 +13,22 @@ export const CATALOG = [
   { group: 'Go to', picker: 'agent', cmd: '/agent', label: 'Agent', desc: 'Activate an agent profile', icon: 'sparkles', keys: 'profile persona' },
   { group: 'Go to', picker: 'skill', cmd: '/skill', label: 'Skills', desc: 'Browse installed skill packs', icon: 'book-open' },
   { group: 'Go to', picker: 'mcp', cmd: '/mcp', label: 'MCP servers', desc: 'Connect or disconnect tool servers', icon: 'plug', keys: 'tools servers' },
+  { group: 'Go to', picker: 'mcp', pickerArg: 'market', label: 'Browse MCP marketplace', desc: 'Connect Slack, Notion, Linear, GitHub and 50+ more in a click', icon: 'sparkles', keys: 'mcp add install connect integration slack notion linear github figma jira clickup canva servers marketplace store' },
   { group: 'Go to', picker: 'command', cmd: '/command', label: 'Custom commands', desc: 'Make your own slash commands from prompts you reuse', icon: 'terminal', keys: 'commands template templates prompt snippet macro custom new create edit shortcut' },
+  { group: 'Go to', action: 'folders', label: 'Open a folder', desc: 'Start Jarvis in another project — it runs alongside this one', icon: 'folder-open', keys: 'project folder directory cd open new session switch workspace repo browse' },
   { group: 'Go to', action: 'inspector-changes', label: 'File changes', desc: 'Files Jarvis created, edited or deleted, with diffs', icon: 'file-diff', keys: 'diff review git patch files edited changed side panel' },
   { group: 'Go to', action: 'attach', label: 'Attach files', desc: 'Photos, video, audio, PDFs or documents (or drop / paste them)', icon: 'paperclip', keys: 'upload image photo picture screenshot file media document pdf video camera' },
   { group: 'Go to', action: 'inspector-activity', label: 'Activity', desc: 'What Jarvis is doing, its tool calls and background jobs', icon: 'activity', keys: 'tools jobs progress timeline running side panel' },
   { group: 'Go to', picker: 'provider', cmd: '/provider', label: 'Providers and login', desc: 'Sign in, add API keys, switch provider', icon: 'key-round', keys: 'login logout sign in oauth api key keys account anthropic claude chatgpt codex openrouter opencode zen' },
 
   { group: 'Conversation', action: 'session_new', cmd: '/new', label: 'New chat', desc: 'Start a fresh conversation', icon: 'plus', keys: 'clear fresh' },
-  { group: 'Conversation', cmd: '/retry', label: 'Retry', desc: 'Send the last message again', icon: 'refresh-cw' },
   { group: 'Conversation', cmd: '/reset', label: 'Reset', desc: 'Clear the conversation history', icon: 'rotate-ccw' },
   { group: 'Conversation', cmd: '/history', label: 'History', desc: 'Summarise the messages so far', icon: 'list' },
   { group: 'Conversation', cmd: '/stats', label: 'Stats', desc: 'Session time, messages and tools', icon: 'chart-column' },
   { group: 'Conversation', fill: true, cmd: '/export ', label: 'Export', desc: 'Save the conversation as markdown', icon: 'download' },
   { group: 'Conversation', cmd: '/copy', label: 'Copy last reply', desc: 'Copy the latest answer on your computer', icon: 'copy' },
+  { group: 'Conversation', fill: true, cmd: '/team ', label: 'Parallel agents', desc: 'Split a big task across 2-6 agents working at the same time', icon: 'users', keys: 'team subagents parallel agents split fan out swarm' },
+  { group: 'Conversation', cmd: '/subagents', label: 'Subagent settings', desc: 'On/off, how many agents run at once, steps and time limits', icon: 'users', keys: 'subagents parallel agents team settings max' },
   { group: 'Conversation', fill: true, cmd: '/loop ', label: 'Loop a task', desc: 'Repeat a task; Jarvis paces itself (/loop 5m … for a fixed interval)', icon: 'timer', keys: 'repeat schedule watch interval recurring' },
   { group: 'Conversation', cmd: '/loop stop', label: 'Stop the loop', desc: 'End the running /loop', icon: 'square', keys: 'loop end cancel' },
 
@@ -34,11 +37,12 @@ export const CATALOG = [
   { group: 'Settings', action: 'toggle-thoughts', label: 'Show thoughts here', desc: 'Thinking in this browser only', icon: 'eye', toggle: 'showThoughts' },
   { group: 'Settings', action: 'toggle-auto', label: 'Auto-approve commands', desc: 'Run shell commands without asking', icon: 'shield', toggle: 'auto_approve', warn: true },
   { group: 'Settings', action: 'theme', label: 'Light or dark', desc: 'Flip the colour mode', icon: 'sun-moon', keys: 'dark light mode theme soft dim' },
-  { group: 'Settings', action: 'appearance', label: 'Appearance', desc: 'Light, dark or system, soft contrast, accent colour, compact view', icon: 'palette', keys: 'theme accent color colour compact notification soft dim dark light' },
+  { group: 'Settings', action: 'glass', label: 'Frosted glass', desc: 'Translucent panels; messages scroll under them', icon: 'blend', keys: 'glass frosted blur translucent transparent transparency appearance' },
+  { group: 'Settings', action: 'appearance', label: 'Appearance', desc: 'Light, dark or system, soft contrast, frosted glass, accent colour, compact view', icon: 'palette', keys: 'theme accent color colour compact notification soft dim dark light glass frosted blur' },
 
   { group: 'Memory', cmd: '/memory', label: 'Memory', desc: 'Personal facts Jarvis remembers', icon: 'database', laptop: true },
   { group: 'Memory', cmd: '/lesson', label: 'Lessons', desc: 'Lessons the agent has saved', icon: 'graduation-cap', laptop: true },
-  { group: 'Memory', cmd: '/pin', label: 'Pinned context', desc: 'Context added to every prompt', icon: 'pin', laptop: true },
+  { group: 'Memory', picker: 'pin', cmd: '/pin', label: 'Pinned context', desc: 'Rules sent with every message: add, edit or unpin them', icon: 'pin', keys: 'pin pinned unpin context rules instructions always standing system prompt' },
   { group: 'Memory', cmd: '/scan', label: 'Scan project', desc: 'Deep scan of identity and docs', icon: 'scan-search' },
 
   { group: 'On your computer', cmd: '/settings', label: 'All settings', desc: 'Every preference, in the terminal', icon: 'sliders-horizontal', laptop: true },
@@ -65,6 +69,8 @@ export const LOCAL_PICKERS = {
   '/mcp': 'mcp',
   '/command': 'command',
   '/commands': 'command',
+  '/pin': 'pin',
+  '/pins': 'pin',
   '/provider': 'provider',
   '/providers': 'provider',
   '/login': 'provider',
@@ -107,11 +113,20 @@ export function wantCustomItems() {
   refresher?.();
 }
 
-/** Everything the ⌘K palette lists: "Go to", then the user's commands, then the rest. */
+// ─── Other running projects (projects.js fills this) ──────────────────────
+
+let projectItems = [];
+
+/** `{ group: 'Projects', label, desc, icon, keys, run }` — one per other running Jarvis. */
+export function setProjectItems(items) {
+  projectItems = Array.isArray(items) ? items : [];
+}
+
+/** Everything the ⌘K palette lists: "Go to", then other projects, the user's commands, then the rest. */
 export function allItems() {
-  if (!customItems.length) return CATALOG;
+  if (!customItems.length && !projectItems.length) return CATALOG;
   const at = CATALOG.findIndex((it) => it.group !== 'Go to');
-  return [...CATALOG.slice(0, at), ...customItems, ...CATALOG.slice(at)];
+  return [...CATALOG.slice(0, at), ...projectItems, ...customItems, ...CATALOG.slice(at)];
 }
 
 export const LAPTOP_COMMANDS = new Set(

@@ -98,6 +98,10 @@ def desktop_notify_sync(title: str, message: str) -> tuple[bool, str]:
 
 def desktop_notify(title: str, message: str) -> bool:
     """Show a system notification without blocking; False when unsupported."""
+    from .. import state
+
+    if state.headless:
+        return False  # a project opened from the browser: nobody is at this screen for it
     cmd, _timeout = _notify_cmd(title, message)
     if not cmd:
         return False

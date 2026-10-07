@@ -88,9 +88,12 @@ RAW = {
     # models.dev's "opencode" is OpenCode Zen.
     "opencode": _prov("OpenCode Zen", [
         _m("zen-frontier", cost=(5.0, 25.0), images=True, release="2026-09-01"),
-        _m("zen-free", cost=(0, 0), release="2026-08-01"),
+        _m("zen-free", cost=(0, 0), images=True, release="2026-08-01"),
         _m("zen-retired", cost=(1.0, 1.0), release="2026-07-01"),
         _m("claude-routed", cost=(3.0, 15.0)),
+        # Deprecated: the newest free model, so it would be the default if kept.
+        _m("zen-dead-free", cost=(0, 0), release="2026-09-15", status="deprecated"),
+        _m("mimo-v2.5-free", cost=(0, 0), status="deprecated"),  # the free tier's default
     ], api="https://opencode.ai/zen/v1", env=("OPENCODE_ZEN_API_KEY",)),
 }
 
@@ -392,19 +395,63 @@ def test_opencode_zen_comes_from_models_dev_and_starts_free(catalog):
     assert pv.model_is_free("zen-free", pv.PROVIDER_OPENCODE_ZEN, {})
 
 
+def test_opencode_zen_drops_deprecated_models_like_opencode(catalog, monkeypatch):
+    """Zen kept serving deprecated deepseek-v4-flash-free, tagged free, while
+    every request got 400 "Model is unavailable". OpenCode hides deprecated
+    models; so does the keyed Zen list — but the free tier's own models keep
+    working on Zen (they run on the free-tier client, not the key)."""
+    from jarvis.auth import opencode_catalog
+
+    served = {"zen-frontier", "zen-free", "zen-dead-free", "mimo-v2.5-free"}
+    monkeypatch.setattr(opencode_catalog, "served_ids",
+                        lambda provider: served if provider == pv.PROVIDER_OPENCODE_ZEN else set())
+    ids = [m for m, _ in pv.opencode_zen_live_models_for_picker()]
+    assert ids == ["zen-frontier", "zen-free"]
+    assert not pv.model_belongs_to_provider("zen-dead-free", pv.PROVIDER_OPENCODE_ZEN)
+    assert pv.normalize_model_for_provider("zen-dead-free", pv.PROVIDER_OPENCODE_ZEN) == "zen-free"
+    assert pv.opencode_zen_default_model() == "zen-free"
+    assert not pv.model_belongs_to_provider("mimo-v2.5-free", pv.PROVIDER_OPENCODE_ZEN)
+
+
+def test_harness_agent_lists_zens_free_rows(catalog, monkeypatch):
+    """The free tier has no list in code: it is Zen's rows tagged Free — served,
+    priced $0 on models.dev, not deprecated — with the same image tags."""
+    from jarvis.auth import opencode_catalog
+
+    served = {"zen-frontier", "zen-free", "zen-dead-free", "mimo-v2.5-free", "unpriced-free"}
+    monkeypatch.setattr(opencode_catalog, "served_ids",
+                        lambda provider: served if provider == pv.PROVIDER_OPENCODE_ZEN else set())
+    rows = pv.harness_agent_models_for_picker()
+    zen_free = [m for m, _ in pv.opencode_zen_live_models_for_picker()
+                if pv.model_is_free(m, pv.PROVIDER_OPENCODE_ZEN)]
+    # Paid, deprecated and unpriced ("Not on models.dev yet") never show.
+    assert [m for m, _ in rows] == zen_free == ["zen-free"]
+    assert pv.harness_agent_default_model() == "zen-free"
+    assert pv.model_sees_images("zen-free", pv.PROVIDER_HARNESS_AGENT)
+    assert pv.model_pricing("zen-free", pv.PROVIDER_HARNESS_AGENT) == (0.0, 0.0)
+    assert pv.is_harness_agent_model("zen-free")
+    assert pv.model_belongs_to_provider("zen-free", pv.PROVIDER_HARNESS_AGENT)
+    for gone in ("zen-dead-free", "mimo-v2.5-free", "zen-frontier", "unpriced-free"):
+        assert not pv.is_harness_agent_model(gone)
+    # A free-tier model saved before it was deprecated moves to the default.
+    assert pv.normalize_model_for_provider("mimo-v2.5-free", pv.PROVIDER_OPENCODE_ZEN) == "zen-free"
+
+
 def test_gateway_list_is_what_it_serves_with_models_dev_details(catalog, monkeypatch):
-    """models.dev lags the gateway: a deprecated model it still serves stays
-    (marked retiring, real price), a served model models.dev doesn't know yet
-    is listed by id, and one models.dev routes to another wire never shows."""
+    """models.dev lags the gateway: a served model models.dev doesn't know yet
+    is listed by id, one models.dev routes to another wire never shows, and —
+    like OpenCode — one models.dev marks deprecated never shows either, even
+    while the gateway still serves it (deepseek-v4-flash-free: 400)."""
     from jarvis.auth import opencode_catalog
 
     served = {"gpt-go", "kimi-k2.6", "old-but-served", "minimax-anthropic", "glm-new"}
     monkeypatch.setattr(opencode_catalog, "served_ids",
                         lambda provider: served if provider == pv.PROVIDER_OPENCODE else set())
     rows = dict(pv.opencode_go_models_for_picker())
-    assert list(rows) == ["gpt-go", "kimi-k2.6", "old-but-served", "glm-new"]
-    assert "retiring" in rows["old-but-served"]
-    assert pv.model_pricing("old-but-served", pv.PROVIDER_OPENCODE) == (0.95, 4.0)
+    assert list(rows) == ["gpt-go", "kimi-k2.6", "glm-new"]
+    # Deprecated: not listed, not kept as a saved model, swapped on startup.
+    assert not pv.model_belongs_to_provider("old-but-served", pv.PROVIDER_OPENCODE)
+    assert pv.normalize_model_for_provider("old-but-served", pv.PROVIDER_OPENCODE) == "gpt-go"
     assert rows["glm-new"] == "Not on models.dev yet, price unknown"
     assert pv.model_pricing("glm-new", pv.PROVIDER_OPENCODE) is None
     # Usable and kept on startup; the other-wire model is not.
@@ -436,7 +483,8 @@ def test_without_a_catalog_everything_is_as_before(no_builtin_keys):
     assert pv.connected_model_sources() == [pv.PROVIDER_HARNESS_AGENT]
     assert pv.opencode_go_models_for_picker() == []  # nothing hard-coded to fall back to
     assert pv.opencode_go_default_model() == ""
-    assert pv.opencode_zen_default_model() == pv.HARNESS_AGENT_DEFAULT_MODEL  # Zen's free tier
+    assert pv.opencode_zen_default_model() == pv.HARNESS_AGENT_FALLBACK_MODEL  # Zen's free tier
+    assert pv.harness_agent_models_for_picker() == [(pv.HARNESS_AGENT_FALLBACK_MODEL, "Big Pickle")]
     assert pv.native_responses_models(pv.PROVIDER_OPENCODE_ZEN) == set()
 
 

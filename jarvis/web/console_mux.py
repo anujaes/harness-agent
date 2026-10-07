@@ -33,6 +33,10 @@ def tool_row_fields(name: str, tool_input: Any, output: Any = None) -> dict[str,
             fields["output_chars"] = len(full)
             fields["has_full"] = bool(full.strip())
             lines, is_err = tool_summary(name, tool_input, full, 120)
+            if len(lines) > 4 and lines[0].startswith("… +"):
+                # A tail summary ("… +N lines" + the last lines): keep the
+                # end — that's where a command's result is.
+                lines = [lines[0]] + lines[-3:]
             fields["summary"] = "\n".join(lines[:4])
             fields["summary_error"] = bool(is_err)
     except Exception:
@@ -68,6 +72,9 @@ class WebMuxConsole:
         # Thinking texts already sent — the same block reaches us from both
         # thinking_stream_finalize and assistant_stream_commit.
         self._sent_thinking: list[str] = []
+        # (team id, agent index) whose report the page already has — an agents
+        # board is re-sent up to 4× a second, reports only once.
+        self._sent_reports: set[tuple[str, int]] = set()
 
     @contextmanager
     def suppress_broadcast(self):
@@ -242,6 +249,12 @@ class WebMuxConsole:
         if (plan or "").strip():
             self._bridge.emit("message", {"role": "assistant", "title": "proposed plan", "text": plan.strip()})
 
+    def show_stats(self, renderable: Any, stats: dict[str, Any]) -> None:
+        """/stats: the terminal keeps its panel, web clients get a stats card."""
+        self._primary.print(renderable)
+        if self._should_broadcast():
+            self._bridge.emit("stats", dict(stats))
+
     def show_reply(self, text: str, flagged: bool = False) -> None:
         fn = getattr(self._primary, "show_reply", None)
         if callable(fn):
@@ -262,7 +275,34 @@ class WebMuxConsole:
         ))
         if event_type == "tool_done" and slim.pop("summary_error", False):
             slim["error"] = True
+        if data.get("name") == "spawn_agents":
+            # The parallel-agents card: names/briefs at start, every report at the end.
+            try:
+                from ..subagents import board_for
+
+                board = board_for(str(data.get("id") or ""), data.get("input"),
+                                  data.get("output") if event_type == "tool_done" else None)
+            except Exception:
+                board = None
+            if board:
+                slim["agents"] = board
         self._bridge.emit(event_type, slim)
+
+    def subagents_update(self, team_id: str, board: dict[str, Any]) -> None:
+        fn = getattr(self._primary, "subagents_update", None)
+        if callable(fn):
+            fn(team_id, board)
+        slim_agents = []
+        for a in board.get("agents") or []:
+            a = dict(a)
+            key = (str(team_id), int(a.get("i") or 0))
+            if a.get("report") and key not in self._sent_reports and a.get("status") not in (
+                    "queued", "running"):
+                self._sent_reports.add(key)
+            else:
+                a.pop("report", None)
+            slim_agents.append(a)
+        self._bridge.emit("agents", {**board, "agents": slim_agents})
 
     def refresh_tool_activity(self) -> None:
         self._primary.refresh_tool_activity()

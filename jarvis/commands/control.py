@@ -6,7 +6,7 @@ from ..constants import (
     KEY_FILE, OPENROUTER_KEY_FILE, OPENCODE_KEY_FILE, OPENCODE_ZEN_KEY_FILE,
     AUTH_MODE_FILE, PROVIDER_FILE, PROVIDERS, PROVIDER_LABELS, MODEL_SOURCE_LABELS,
     OPENROUTER_DEFAULT_MODEL,
-    HARNESS_AGENT_DEFAULT_MODEL, HARNESS_AGENT_MODEL_IDS,
+    harness_agent_default_model,
     THINK_EFFORTS, DEFAULT_THINK_EFFORT,
     is_catalog_provider, provider_label,
     models_for, is_harness_agent_model, normalize_model_for_provider,
@@ -66,6 +66,11 @@ def handle_control(c: str, arg: str):
         return True, None
     if c == "/tokens":
         console.print(f"in:{state.total_in}  out:{state.total_out}  total:{state.total_tokens}")
+        if state.cache_read_tokens or state.cache_write_tokens:
+            console.print(
+                f"[dim]last request — cache read:{state.cache_read_tokens}  "
+                f"cache write:{state.cache_write_tokens}[/]"
+            )
         return True, None
     if c == "/cost":
         console.print(f"[green]≈ ${estimated_cost():.4f}[/] "
@@ -83,17 +88,29 @@ def handle_control(c: str, arg: str):
         )
         return True, None
     if c == "/stats":
-        import pathlib
+        stats = session_stats()
         t = Table(show_header=False, box=None, padding=(0, 2))
-        t.add_row("⏱  elapsed", fmt_duration(time.time() - state.session_start))
-        t.add_row("◈ messages", str(len(state.messages)))
-        t.add_row("⚙ tool calls", str(state.tool_calls_count))
-        t.add_row("⚙  internals", "shown" if state.show_internal else "hidden")
-        t.add_row("⇅ tokens in/out/total", f"{state.total_in} / {state.total_out} / {state.total_tokens}")
-        t.add_row("✦ est. cost", f"${estimated_cost():.4f}")
-        t.add_row("✦ model", state.MODEL)
-        t.add_row("▣ cwd", str(pathlib.Path.cwd()))
-        console.print(Panel(t, title="◆ session stats", border_style="cyan"))
+        t.add_row("⏱  elapsed", fmt_duration(stats["elapsed_s"]))
+        t.add_row("◈ messages", str(stats["messages"]))
+        t.add_row("⚙ tool calls", str(stats["tool_calls"]))
+        t.add_row("⚙  internals", "shown" if stats["internals"] else "hidden")
+        t.add_row("⇅ tokens in/out/total",
+                  f"{stats['tokens_in']} / {stats['tokens_out']} / {stats['tokens_total']}")
+        if stats["cache_read"] or stats["cache_write"]:
+            pct = stats["cache_read"] * 100 // max(1, stats["tokens_in"])
+            t.add_row("⚡ prompt cache",
+                      f"{pct}% of the last prompt read from cache "
+                      f"({stats['cache_read']} read / {stats['cache_write']} written)")
+        t.add_row("✦ est. cost", f"${stats['cost']:.4f}")
+        t.add_row("✦ model", stats["model"])
+        t.add_row("▣ cwd", stats["cwd"])
+        panel = Panel(t, title="◆ session stats", border_style="cyan")
+        # Web remote: a native stats card instead of the panel as text.
+        show_stats = getattr(console, "show_stats", None)
+        if callable(show_stats):
+            show_stats(panel, stats)
+        else:
+            console.print(panel)
         return True, None
     if c in ("/model", "/mode"):
         _handle_model(arg)
@@ -105,6 +122,26 @@ def handle_control(c: str, arg: str):
         _handle_provider(arg)
         return True, None
     return False, None
+
+
+def session_stats() -> dict:
+    """What /stats shows, as plain values (the terminal panel and the web card)."""
+    import pathlib
+    return {
+        "elapsed_s": max(0, int(time.time() - state.session_start)),
+        "messages": len(state.messages),
+        "tool_calls": state.tool_calls_count,
+        "internals": bool(state.show_internal),
+        "tokens_in": state.total_in,
+        "tokens_out": state.total_out,
+        "tokens_total": state.total_tokens,
+        "cache_read": state.cache_read_tokens,
+        "cache_write": state.cache_write_tokens,
+        "cost": estimated_cost(),
+        "model": state.MODEL,
+        "provider": provider_label(state.provider) if state.provider else "",
+        "cwd": str(pathlib.Path.cwd()),
+    }
 
 
 def _handle_plan(arg: str = "") -> None:
@@ -132,31 +169,27 @@ def _handle_plan(arg: str = "") -> None:
 
 
 def _handle_think(arg: str = "") -> None:
-    value = (arg or "").strip().lower()
-    if not value:
-        state.think_mode = not state.think_mode
-    elif value in ("mode", "modes", "select"):
-        console.print(
-            "[cyan]thinking efforts:[/] xhigh, high, medium, low, minimal, none\n"
-            "[dim]In the TUI, /think mode opens a picker.[/]"
-        )
-        return
-    elif value in ("on", "true", "yes"):
-        state.think_mode = True
-        if state.think_effort == "none":
-            state.think_effort = DEFAULT_THINK_EFFORT
-    elif value in ("off", "false", "no"):
-        state.think_mode = False
-    elif value in THINK_EFFORTS:
-        state.think_mode = value != "none"
-        state.think_effort = value
-    else:
-        console.print(
-            "[red]usage:[/] /think [on|off|xhigh|high|medium|low|minimal|none]"
-        )
-        return
+    from ..repl import thinking
 
-    state.save_think_config()
+    value = (arg or "").strip().lower()
+    if value in ("mode", "modes", "select"):
+        console.print(
+            f"[cyan]thinking:[/] {thinking.describe_levels()}\n"
+            "[dim]In the TUI, /think mode opens a picker. "
+            "/think on | off | <level> | none[/]"
+        )
+        return
+    if not value:
+        value = "off" if state.think_mode else "on"
+    reason = thinking.set_preference(value)
+    if reason:
+        console.print(
+            f"[yellow]✗ {reason}[/]\n[dim]{thinking.describe_levels()}[/]"
+        )
+        return
+    eff = thinking.effective_now()
+    if eff.note:
+        console.print(f"[dim]{eff.note}[/]")
     header_panel()
 
 
@@ -214,15 +247,12 @@ def resolve_model_arg(arg: str) -> tuple[str, str] | None:
     return None
 
 
-_HARNESS_AGENT_MODEL_IDS = set(HARNESS_AGENT_MODEL_IDS)
-
-
 def _provider_for_model(model: str) -> str:
     """Determine provider from model id."""
     # Not a frozen id set: the Codex line-up is discovered at runtime.
     if model_belongs_to_provider(model, PROVIDER_OPENAI_CODEX):
         return PROVIDER_OPENAI_CODEX
-    if model in _HARNESS_AGENT_MODEL_IDS:
+    if is_harness_agent_model(model):
         return PROVIDER_OPENCODE_ZEN
     # OpenCode Go / Zen line-ups are live (models.dev + what each gateway
     # serves). Zen also serves Claude / GPT ids, so it is asked last: a typed
@@ -476,7 +506,7 @@ def apply_key_change(provider: str, *, removed: bool = False) -> str:
             return ""
         from ..auth.client import _fallback_harness_agent_client
 
-        keep = state.MODEL if is_harness_agent_model(state.MODEL) else HARNESS_AGENT_DEFAULT_MODEL
+        keep = state.MODEL if is_harness_agent_model(state.MODEL) else harness_agent_default_model()
         state.client = _fallback_harness_agent_client(preferred_model=keep)
         save_last_model()
         return f"switched to Harness Agent (free) · {state.MODEL}"

@@ -14,9 +14,16 @@ export const store = {
     session_id: '',
     session_title: '',
     project: '',
+    /** The folder this Jarvis works in, and `~/…` for showing it (the top bar's folder chip). */
+    cwd: '',
+    cwd_display: '',
+    /** Opened from the web (no terminal): the Projects list can stop it. */
+    headless: false,
     provider: '',
     think_mode: true,
     think_effort: 'high',
+    /** What the current model takes for thinking (server: repl/thinking.py public()); null until known. */
+    think: null,
     show_internal: true,
     auto_approve: false,
     global_agents: false,
@@ -25,12 +32,18 @@ export const store = {
     tokens_in: 0,
     tokens_out: 0,
     tokens_total: 0,
+    tokens_cache_read: 0,
     tool_calls: 0,
     message_count: 0,
   },
   /** This device only: show thinking in the transcript */
   showThoughts: true,
+  /** Labels of the queued messages (the activity line counts them). */
   queue: [],
+  /** The queue panel's rows: `{ id, text, label, files, steer, steerable, command, editing }`. */
+  queueItems: [],
+  /** Pinned context summary (`{ lines, enabled, chars }`): an open Pin dialog reloads when it changes. */
+  pin: { lines: 0, enabled: true },
   /** Pending agent prompt (approval / question / input) awaiting an answer */
   activePrompt: null,
   pendingToggle: null,
@@ -86,6 +99,8 @@ export function loadSnapshot(data) {
   }
   if (Object.keys(patch).length) patchSession(patch);
   if ('queue' in data) patchStore({ queue: data.queue || [] });
+  if (Array.isArray(data.queue_items)) patchStore({ queueItems: data.queue_items });
+  if (data.pin && typeof data.pin === 'object') patchStore({ pin: { ...store.pin, ...data.pin } });
 }
 
 export function loadUiPrefs() {
